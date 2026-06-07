@@ -1,0 +1,45 @@
+name: Release
+
+# 触发条件：推送形如 v1.0.0 的 tag 时自动运行
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 权限：让 Action 可以创建 Release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建并发布 (创建草稿 Release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run package -- --publish always
+
+      - name: 上传构建产物 (作为 workflow artifact 备份)
+        uses: actions/upload-artifact@v4
+        with:
+          name: selectai-installer
+          path: |
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: warn
+          retention-days: 30

@@ -66,6 +66,10 @@
       "language": "2052",
       "installerIcon": "public/icon.png",
       "uninstallerIcon": "public/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "releaseType": "draft"
     }
   }
 }

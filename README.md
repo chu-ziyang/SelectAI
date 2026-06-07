@@ -118,6 +118,31 @@ npm run package
 3. **配置动作** — 在「动作管理」中启用/禁用/调整划词动作
 4. **划词使用** — 在任意应用选中文字 → 弹出工具栏 → 选择动作 → 查看结果
 
+## 📦 发布新版本
+
+项目已配置 GitHub Actions，推送 tag 即可自动打包并创建草稿 Release。
+
+```bash
+# 1. 确保所有改动已提交
+git add -A
+git commit -m "release: v1.0.1 修复 XXX"
+
+# 2. 创建 tag（版本号遵循 语义化版本 规范）
+git tag v1.0.1
+
+# 3. 推送 tag，触发自动构建
+git push origin v1.0.1
+```
+
+之后：
+
+1. 进入 https://github.com/chu-ziyang/SelectAI/actions 查看构建进度（约 5-8 分钟）
+2. 构建完成后进入 https://github.com/chu-ziyang/SelectAI/releases
+3. 找到 **Draft** 状态的 Release → 编辑 release notes → 点 **Publish release**
+
+> 💡 构建产物（`release/*.exe`）也会作为 workflow artifact 保存 30 天，
+> 即使 Release 没发，也可以在 Actions 页面下载。
+
 ## 🔒 隐私与安全
 
 - 所有 API Key 存储在本地，使用 Electron `safeStorage` 加密
