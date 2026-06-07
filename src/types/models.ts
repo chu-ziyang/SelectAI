@@ -250,3 +250,24 @@ export interface ChatMessage {
   timestamp: number
   isStreaming?: boolean
 }
+
+export type PopupSessionStatus = 'hidden' | 'toolbar' | 'preparing' | 'streaming' | 'done' | 'error'
+
+export interface PopupSession {
+  id: string
+  selectedText: string
+  action: ActionConfig | null
+  providerId: string | null
+  modelId: string | null
+  status: PopupSessionStatus
+  messages: ChatMessage[]
+  streamText: string
+  error: string | null
+  startedAt: number | null
+  latencyMs: number | null
+  tokenUsage: {
+    promptTokens?: number
+    completionTokens?: number
+    totalTokens?: number
+  } | null
+}

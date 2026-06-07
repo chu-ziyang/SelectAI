@@ -27,14 +27,24 @@ export interface ElectronAPI {
     cancel: () => Promise<{ ok: boolean; error?: string }>
     onStreamChunk: (callback: (data: { content: string; fullContent: string }) => void) => void
     offStreamChunk: () => void
+    onStreamUsage: (callback: (data: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void) => void
+    offStreamUsage: () => void
   }
   getSelectedText: () => Promise<string>
   popup: {
+    ready: () => Promise<{ ok: boolean }>
+    present: () => Promise<{ ok: boolean }>
+    showSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => Promise<{ ok: boolean }>
+    updateSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => Promise<{ ok: boolean }>
+    hide: () => Promise<{ ok: boolean }>
     setPinned: (pinned: boolean) => Promise<{ ok: boolean }>
     setFocusLock: (lock: boolean) => Promise<{ ok: boolean }>
     close: () => Promise<{ ok: boolean }>
     resize: (width: number, height: number) => Promise<{ ok: boolean }>
+    onSelectionPayload: (callback: (data: { id: string; text: string; anchor: { x: number; y: number }; reason: 'auto' | 'ctrl' | 'manual' | 'clipboard'; createdAt: number }) => void) => () => void
+    onStoreUpdated: (callback: (data: { key: string; value: unknown }) => void) => () => void
     onRequestClose: (callback: () => void) => () => void
+    onHidden: (callback: () => void) => () => void
   }
   result: {
     open: (data: { actionId: string; name: string; icon: string; text: string; providerId: string; modelId: string; prompt: string }) => Promise<{ ok: boolean }>

@@ -9,8 +9,9 @@ import {
 import { registerShortcuts, unregisterShortcuts } from './shortcuts'
 import { startTextWatch, stopTextWatch } from './text-selection'
 import {
-  createPopupWindow, closePopupWindow, setPopupPinned, setPopupFocusLock, resizePopupWindow,
-  createResultWindow, closeResultWindow, setResultPinned,
+  ensurePopupWindow, showPopupSelection, updatePopupSelection, hidePopupWindow,
+  closePopupWindow, setPopupPinned, setPopupFocusLock, resizePopupWindow, markPopupRendererReady,
+  presentPopupWindow, createResultWindow, closeResultWindow, setResultPinned,
 } from './windows'
 
 let mainWindow: BrowserWindow | null = null
@@ -202,6 +203,9 @@ function setupIPC() {
       if (!(store.get('_paused', false) as boolean)) {
         startTextWatch()
       }
+    }
+    if (key === 'settings' || key === 'popupSettings' || key === 'providers' || key === 'actions') {
+      ensurePopupWindow().webContents.send('popup:store-updated', { key, value })
     }
     if (key === 'shortcut' || key === 'showWindowShortcut') registerShortcuts()
     if (key === '_paused') {
@@ -406,6 +410,7 @@ function setupIPC() {
 
     activeAbortController = new AbortController()
     const { signal } = activeAbortController
+    const startedAt = Date.now()
 
     try {
       const url = `${p.baseUrl.replace(/\/+$/, '')}/chat/completions`
@@ -421,6 +426,8 @@ function setupIPC() {
           temperature: params.temperature ?? 0.3,
           max_tokens: params.maxTokens ?? 2048,
           stream: true,
+          // 让 OpenAI 兼容接口在最后一个 chunk 里返回 usage（prompt/completion/total tokens）
+          stream_options: { include_usage: true },
         }),
         signal,
       })
@@ -440,6 +447,7 @@ function setupIPC() {
       const decoder = new TextDecoder()
       let buffer = ''
       let fullContent = ''
+      let tokenUsage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -459,10 +467,25 @@ function setupIPC() {
               fullContent += content
               event.sender.send('ai:stream-chunk', { content, fullContent })
             }
+            // OpenAI 在最后一个 chunk（choices 为空）携带 usage
+            if (parsed.usage) {
+              tokenUsage = {
+                promptTokens: parsed.usage.prompt_tokens,
+                completionTokens: parsed.usage.completion_tokens,
+                totalTokens: parsed.usage.total_tokens,
+              }
+              // 单独推送一条 usage 事件，前端可以监听
+              event.sender.send('ai:stream-usage', tokenUsage)
+            }
           } catch { /* 跳过解析失败的行 */ }
         }
       }
-      return { ok: true, content: fullContent }
+      return {
+        ok: true,
+        content: fullContent,
+        latencyMs: Date.now() - startedAt,
+        tokenUsage,
+      }
     } catch (err: any) {
       if (err.name === 'AbortError') return { ok: false, error: '已取消' }
       return { ok: false, error: err.message || '网络错误' }
@@ -494,12 +517,32 @@ function setupIPC() {
     setPopupPinned(pinned)
     return { ok: true }
   })
+  ipcMain.handle('popup:renderer-ready', () => {
+    markPopupRendererReady()
+    return { ok: true }
+  })
+  ipcMain.handle('popup:present', () => {
+    presentPopupWindow()
+    return { ok: true }
+  })
   ipcMain.handle('popup:set-focus-lock', (_e, lock: boolean) => {
     setPopupFocusLock(lock)
     return { ok: true }
   })
   ipcMain.handle('popup:close', () => {
     closePopupWindow()
+    return { ok: true }
+  })
+  ipcMain.handle('popup:hide', () => {
+    hidePopupWindow()
+    return { ok: true }
+  })
+  ipcMain.handle('popup:show-selection', (_e, data: { text: string; anchor?: Electron.Point; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => {
+    showPopupSelection(data.text, data.anchor || screen.getCursorScreenPoint(), data.reason || 'manual')
+    return { ok: true }
+  })
+  ipcMain.handle('popup:update-selection', (_e, data: { text: string; anchor?: Electron.Point; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => {
+    updatePopupSelection(data.text, data.anchor || screen.getCursorScreenPoint(), data.reason || 'manual')
     return { ok: true }
   })
 
@@ -537,6 +580,7 @@ function setupIPC() {
 app.whenReady().then(() => {
   setupIPC()
   createMainWindow()
+  ensurePopupWindow()
   createTray()
   registerShortcuts()
 

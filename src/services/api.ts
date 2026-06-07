@@ -21,6 +21,8 @@ export interface ApiResult {
   content?: string
   error?: string
   detail?: string
+  latencyMs?: number
+  tokenUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null
 }
 
 /**

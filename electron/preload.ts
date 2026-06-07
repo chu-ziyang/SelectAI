@@ -33,19 +33,45 @@ const electronAPI = {
       ipcRenderer.on('ai:stream-chunk', (_e, data) => callback(data))
     },
     offStreamChunk: () => ipcRenderer.removeAllListeners('ai:stream-chunk'),
+    onStreamUsage: (callback: (data: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void) => {
+      ipcRenderer.on('ai:stream-usage', (_e, data) => callback(data))
+    },
+    offStreamUsage: () => ipcRenderer.removeAllListeners('ai:stream-usage'),
   },
   // 选中文字
   getSelectedText: () => ipcRenderer.invoke('get-selected-text'),
   // 弹窗控制
   popup: {
+    ready: () => ipcRenderer.invoke('popup:renderer-ready'),
+    present: () => ipcRenderer.invoke('popup:present'),
+    showSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) =>
+      ipcRenderer.invoke('popup:show-selection', data),
+    updateSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) =>
+      ipcRenderer.invoke('popup:update-selection', data),
+    hide: () => ipcRenderer.invoke('popup:hide'),
     setPinned: (pinned: boolean) => ipcRenderer.invoke('popup:set-pinned', pinned),
     setFocusLock: (lock: boolean) => ipcRenderer.invoke('popup:set-focus-lock', lock),
     close: () => ipcRenderer.invoke('popup:close'),
     resize: (width: number, height: number) => ipcRenderer.invoke('popup:resize', width, height),
+    onSelectionPayload: (callback: (data: { id: string; text: string; anchor: { x: number; y: number }; reason: 'auto' | 'ctrl' | 'manual' | 'clipboard'; createdAt: number }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { id: string; text: string; anchor: { x: number; y: number }; reason: 'auto' | 'ctrl' | 'manual' | 'clipboard'; createdAt: number }) => callback(data)
+      ipcRenderer.on('popup:selection-payload', listener)
+      return () => ipcRenderer.removeListener('popup:selection-payload', listener)
+    },
+    onStoreUpdated: (callback: (data: { key: string; value: unknown }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { key: string; value: unknown }) => callback(data)
+      ipcRenderer.on('popup:store-updated', listener)
+      return () => ipcRenderer.removeListener('popup:store-updated', listener)
+    },
     onRequestClose: (callback: () => void) => {
       const listener = () => callback()
       ipcRenderer.on('popup:request-close', listener)
       return () => ipcRenderer.removeListener('popup:request-close', listener)
+    },
+    onHidden: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('popup:hidden', listener)
+      return () => ipcRenderer.removeListener('popup:hidden', listener)
     },
   },
   result: {

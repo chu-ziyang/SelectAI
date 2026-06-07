@@ -255,7 +255,8 @@ function Preview({ popup, copy }: { popup: PS; copy: PreviewCopy }) {
 
   return (
     <div className="ppv">
-      <div className="ppv-window" style={{ width: previewWidth }}>
+      {/* 用 max-width 跟随列宽自适应，避免列被内容撑大而与右栏重叠 */}
+      <div className="ppv-window" style={{ width: '100%', maxWidth: previewWidth }}>
         <div className="ppv-document">
           <p>{copy.text}</p>
           <p className="ppv-selected-text">
@@ -266,7 +267,7 @@ function Preview({ popup, copy }: { popup: PS; copy: PreviewCopy }) {
 
       <div
         className="ppv-toolbar-wrap"
-        style={{ width: previewWidth, opacity: previewOpacity }}
+        style={{ width: '100%', maxWidth: previewWidth, opacity: previewOpacity }}
       >
         <SelectionToolbar
           preview
@@ -279,7 +280,8 @@ function Preview({ popup, copy }: { popup: PS; copy: PreviewCopy }) {
       <div
         className="ppv-result"
         style={{
-          width: previewWidth,
+          width: '100%',
+          maxWidth: previewWidth,
           height: previewHeight,
           borderRadius: popup.cornerRadius,
           padding: popup.padding,

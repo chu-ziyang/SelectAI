@@ -12,12 +12,18 @@ let popupShowFallback: ReturnType<typeof setTimeout> | null = null
 let popupCloseFallback: ReturnType<typeof setTimeout> | null = null
 let popupAnchor: Electron.Point | null = null
 let resultPinned = false
+let pendingSelectionPayload: PopupSelectionPayload | null = null
+let pendingSelectionShouldShow = false
+let popupReady = false
+let popupPresentTimer: ReturnType<typeof setTimeout> | null = null
+let activeAnimTimer: NodeJS.Timeout | null = null
 
 interface StoredPopupSettings {
   width?: number
   maxHeight?: number
   padding?: number
   opacity?: number
+  cornerRadius?: number
   placement?: string
   offsetX?: number
   offsetY?: number
@@ -28,11 +34,20 @@ interface StoredPopupSettings {
   autoHideSeconds?: number
 }
 
+export interface PopupSelectionPayload {
+  id: string
+  text: string
+  anchor: Electron.Point
+  reason: 'auto' | 'ctrl' | 'manual' | 'clipboard'
+  createdAt: number
+}
+
 const DEFAULT_POPUP_SETTINGS: Required<StoredPopupSettings> = {
   width: 320,
   maxHeight: 400,
   padding: 16,
   opacity: 100,
+  cornerRadius: 12,
   placement: 'bottom-right',
   offsetX: 0,
   offsetY: 8,
@@ -113,6 +128,48 @@ function calculatePopupBounds(
   return { x: Math.round(x), y: Math.round(y), width: popupW, height: popupH }
 }
 
+function getRoundedRectShape(width: number, height: number, radius: number): Electron.Rectangle[] {
+  const w = Math.max(1, Math.round(width))
+  const h = Math.max(1, Math.round(height))
+  const r = Math.max(0, Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2)))
+  if (r <= 0) return [{ x: 0, y: 0, width: w, height: h }]
+
+  const rects: Electron.Rectangle[] = []
+  let pending: Electron.Rectangle | null = null
+  const pushRow = (y: number, x: number, rowWidth: number) => {
+    if (rowWidth <= 0) return
+    if (pending && pending.x === x && pending.width === rowWidth && pending.y + pending.height === y) {
+      pending.height += 1
+      return
+    }
+    if (pending) rects.push(pending)
+    pending = { x, y, width: rowWidth, height: 1 }
+  }
+
+  for (let y = 0; y < h; y += 1) {
+    let inset = 0
+    if (y < r) {
+      const dy = r - y - 0.5
+      inset = Math.max(0, Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy))))
+    } else if (y >= h - r) {
+      const dy = y - (h - r) + 0.5
+      inset = Math.max(0, Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy))))
+    }
+    pushRow(y, inset, w - inset * 2)
+  }
+  if (pending) rects.push(pending)
+  return rects
+}
+
+function applyPopupWindowShape(win: BrowserWindow, width: number, height: number, radius = getPopupSettings().cornerRadius) {
+  if (win.isDestroyed()) return
+  try {
+    win.setShape(getRoundedRectShape(width, height, radius))
+  } catch {
+    // setShape is platform-dependent; CSS border-radius remains the visual fallback.
+  }
+}
+
 function requestPopupWindowClose() {
   if (!popupWindow || popupWindow.isDestroyed()) return
   popupWindow.webContents.send('popup:request-close')
@@ -122,20 +179,42 @@ function requestPopupWindowClose() {
   }, 650)
 }
 
-/**
- * 创建悬浮弹窗窗口
- * - 无边框、透明、置顶、不抢焦点
- */
-export function createPopupWindow(text: string) {
-  if (popupWindow && !popupWindow.isDestroyed()) {
-    const currentSettings = getPopupSettings()
-    if (!currentSettings.replaceOnNewSelect) return
-    const previous = popupWindow
-    popupWindow = null
-    previous.close()
+function cancelPopupBoundsAnimation() {
+  if (activeAnimTimer) {
+    clearTimeout(activeAnimTimer)
+    activeAnimTimer = null
   }
-  popupPinned = false
-  popupFocusLock = false
+}
+
+function cancelPopupPresentTimer() {
+  if (popupPresentTimer) {
+    clearTimeout(popupPresentTimer)
+    popupPresentTimer = null
+  }
+}
+
+export function presentPopupWindow(delayMs = 0) {
+  cancelPopupPresentTimer()
+  popupPresentTimer = setTimeout(() => {
+    if (popupWindow && !popupWindow.isDestroyed() && !popupWindow.isVisible()) {
+      popupWindow.showInactive()
+    }
+    popupPresentTimer = null
+  }, Math.max(0, delayMs))
+}
+
+function emitSelectionPayload(win: BrowserWindow, payload: PopupSelectionPayload, shouldShow: boolean) {
+  win.webContents.send('popup:selection-payload', payload)
+  if (!shouldShow) cancelPopupPresentTimer()
+}
+
+/**
+ * 预创建并复用悬浮弹窗窗口。
+ * 快速划词体验依赖它常驻隐藏：选中文字变化时只推送 payload，不重新 loadURL。
+ */
+export function ensurePopupWindow() {
+  if (popupWindow && !popupWindow.isDestroyed()) return popupWindow
+
   if (autoHideTimer) {
     clearTimeout(autoHideTimer)
     autoHideTimer = null
@@ -150,10 +229,8 @@ export function createPopupWindow(text: string) {
   }
 
   const settings = getPopupSettings()
-  const cursorPoint = screen.getCursorScreenPoint()
-  popupAnchor = cursorPoint
+  const cursorPoint = popupAnchor || screen.getCursorScreenPoint()
 
-  // Give the renderer enough room to measure its natural toolbar width while hidden.
   const popupW = Math.max(240, Math.min(settings.width, 720))
   const popupH = 68
   const bounds = calculatePopupBounds(cursorPoint, popupW, popupH, settings)
@@ -168,6 +245,10 @@ export function createPopupWindow(text: string) {
     resizable: false,
     movable: true,
     hasShadow: false,
+    // 关键：明确把 backgroundColor 设为透明。
+    // Windows 上只设 transparent:true 不够，还需要 backgroundColor:'#00000000'，
+    // 否则在某些主题下会出现"白色方框"而不是真正透明。
+    backgroundColor: '#00000000',
     // 不抢焦点——关键！
     focusable: true,
     webPreferences: {
@@ -177,30 +258,24 @@ export function createPopupWindow(text: string) {
     },
   })
   popupWindow = win
+  popupReady = false
+  applyPopupWindowShape(win, bounds.width, bounds.height, settings.cornerRadius)
 
-  // 不让弹窗抢走当前应用的焦点
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true)
 
-  const hash = `/popup?text=${encodeURIComponent(text)}`
-
   if (!app.isPackaged) {
-    win.loadURL(`http://localhost:5174/#${hash}`)
+    win.loadURL('http://localhost:5174/#/popup')
   } else {
     win.loadFile(
       path.join(__dirname, '../dist-renderer/index.html'),
-      { hash },
+      { hash: '/popup' },
     )
   }
 
-  win.once('ready-to-show', () => {
-    // The renderer normally calls popup:resize immediately. Keep a fallback so
-    // a renderer error never leaves an invisible window behind.
-    popupShowFallback = setTimeout(() => {
-      if (popupWindow && !popupWindow.isDestroyed() && !popupWindow.isVisible()) {
-        popupWindow.showInactive()
-      }
-    }, 500)
+  win.webContents.once('did-finish-load', () => {
+    // Renderer calls markPopupRendererReady after React listeners are mounted.
+    popupReady = false
   })
 
   win.on('closed', () => {
@@ -211,6 +286,8 @@ export function createPopupWindow(text: string) {
     popupPinned = false
     popupFocusLock = false
     popupAnchor = null
+    popupReady = false
+    pendingSelectionPayload = null
     if (popupShowFallback) {
       clearTimeout(popupShowFallback)
       popupShowFallback = null
@@ -218,6 +295,10 @@ export function createPopupWindow(text: string) {
     if (popupCloseFallback) {
       clearTimeout(popupCloseFallback)
       popupCloseFallback = null
+    }
+    if (popupPresentTimer) {
+      clearTimeout(popupPresentTimer)
+      popupPresentTimer = null
     }
     if (popupWindow === win) popupWindow = null
   })
@@ -228,6 +309,106 @@ export function createPopupWindow(text: string) {
     if (popupWindow !== win) return
     requestPopupWindowClose()
   })
+
+  return win
+}
+
+export function markPopupRendererReady() {
+  popupReady = true
+  if (!popupWindow || popupWindow.isDestroyed()) return
+  if (pendingSelectionPayload) {
+    emitSelectionPayload(popupWindow, pendingSelectionPayload, pendingSelectionShouldShow)
+    pendingSelectionPayload = null
+    pendingSelectionShouldShow = false
+  }
+}
+
+export function showPopupSelection(
+  text: string,
+  anchor: Electron.Point = screen.getCursorScreenPoint(),
+  reason: PopupSelectionPayload['reason'] = 'auto',
+) {
+  const settings = getPopupSettings()
+  if (popupWindow && !popupWindow.isDestroyed() && popupWindow.isVisible() && !settings.replaceOnNewSelect) return
+
+  popupPinned = false
+  popupFocusLock = false
+  popupAnchor = anchor
+
+  if (autoHideTimer) {
+    clearTimeout(autoHideTimer)
+    autoHideTimer = null
+  }
+  if (popupCloseFallback) {
+    clearTimeout(popupCloseFallback)
+    popupCloseFallback = null
+  }
+  if (popupShowFallback) {
+    clearTimeout(popupShowFallback)
+    popupShowFallback = null
+  }
+  cancelPopupPresentTimer()
+
+  const win = ensurePopupWindow()
+  const toolbarWidth = Math.max(240, Math.min(settings.width, 720))
+  const toolbarHeight = 68
+  const bounds = calculatePopupBounds(anchor, toolbarWidth, toolbarHeight, settings)
+  cancelPopupBoundsAnimation()
+  win.setBounds(bounds, false)
+  applyPopupWindowShape(win, bounds.width, bounds.height, settings.cornerRadius)
+
+  const payload: PopupSelectionPayload = {
+    id: `ps_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    text,
+    anchor,
+    reason,
+    createdAt: Date.now(),
+  }
+
+  if (popupReady) {
+    emitSelectionPayload(win, payload, !win.isVisible())
+  } else {
+    pendingSelectionPayload = payload
+    pendingSelectionShouldShow = true
+  }
+
+  if (settings.autoHide && !autoHideTimer) {
+    autoHideTimer = setTimeout(() => {
+      if (!popupPinned && !popupFocusLock && popupWindow && !popupWindow.isDestroyed()) hidePopupWindow()
+    }, settings.autoHideSeconds * 1000)
+  }
+}
+
+export function updatePopupSelection(
+  text: string,
+  anchor: Electron.Point = screen.getCursorScreenPoint(),
+  reason: PopupSelectionPayload['reason'] = 'auto',
+) {
+  showPopupSelection(text, anchor, reason)
+}
+
+export function hidePopupWindow() {
+  if (popupCloseFallback) {
+    clearTimeout(popupCloseFallback)
+    popupCloseFallback = null
+  }
+  if (autoHideTimer) {
+    clearTimeout(autoHideTimer)
+    autoHideTimer = null
+  }
+  popupPinned = false
+  popupFocusLock = false
+  cancelPopupPresentTimer()
+  if (popupWindow && !popupWindow.isDestroyed()) {
+    popupWindow.webContents.send('popup:hidden')
+    popupWindow.hide()
+  }
+  cancelPopupBoundsAnimation()
+}
+
+// 旧入口保留给 text-selection/快捷键调用；内部已改成复用常驻窗口。
+export function createPopupWindow(text: string) {
+  showPopupSelection(text, screen.getCursorScreenPoint(), 'auto')
 }
 
 export function setPopupPinned(pinned: boolean) {
@@ -244,6 +425,10 @@ export function setPopupPinned(pinned: boolean) {
  */
 export function setPopupFocusLock(lock: boolean) {
   popupFocusLock = lock
+  if (lock && autoHideTimer) {
+    clearTimeout(autoHideTimer)
+    autoHideTimer = null
+  }
   // 进入展开态时，如果焦点已不在弹窗里（比如用户点过别处），
   // 把它拉回前台但不抢焦点，避免被 blur 立刻误关。
   if (lock && popupWindow && !popupWindow.isDestroyed() && !popupWindow.isFocused()) {
@@ -261,10 +446,7 @@ export function closePopupWindow() {
     clearTimeout(popupCloseFallback)
     popupCloseFallback = null
   }
-  if (popupWindow && !popupWindow.isDestroyed()) {
-    popupWindow.close()
-    popupWindow = null
-  }
+  hidePopupWindow()
 }
 
 export function getPopupWindow() {
@@ -275,21 +457,65 @@ export function resizePopupWindow(width: number, height: number) {
   if (popupWindow && !popupWindow.isDestroyed()) {
     const settings = getPopupSettings()
     const anchor = popupAnchor || screen.getCursorScreenPoint()
+    // 宽度上限 720；高度上限放到 800（之前 640 太紧，长流式内容被截在内部滚动），
+    // 同时再兜底限制到屏幕工作区高度的 90%，避免超高内容把窗口顶出屏幕。
     const safeWidth = Math.max(120, Math.min(Math.ceil(width), 720))
-    const safeHeight = Math.max(40, Math.min(Math.ceil(height), 640))
-    popupWindow.setBounds(calculatePopupBounds(anchor, safeWidth, safeHeight, settings), false)
+    const display = screen.getDisplayNearestPoint(anchor)
+    const maxByScreen = Math.max(160, Math.floor(display.workArea.height * 0.9))
+    const safeHeight = Math.max(40, Math.min(Math.ceil(height), maxByScreen))
+    const target = calculatePopupBounds(anchor, safeWidth, safeHeight, settings)
+
+    // 平滑过渡：当前 bounds 与目标 bounds 之间用 RAF 缓动，
+    // 让窗口大小变化看起来"缓慢增长"而不是瞬时跳变。
+    animateBounds(popupWindow, target)
+
     if (popupShowFallback) {
       clearTimeout(popupShowFallback)
       popupShowFallback = null
     }
-    if (!popupWindow.isVisible()) popupWindow.showInactive()
-
-    if (settings.autoHide && !autoHideTimer) {
+    if (settings.autoHide && !popupFocusLock && !autoHideTimer) {
       autoHideTimer = setTimeout(() => {
         if (!popupPinned && popupWindow && !popupWindow.isDestroyed()) requestPopupWindowClose()
       }, settings.autoHideSeconds * 1000)
     }
   }
+}
+
+/** 在窗口上以 16ms 步进缓动过渡到目标 bounds（缓出曲线，约 220ms）
+ *  用 setTimeout 链而非 requestAnimationFrame，因为 Electron 主进程无 DOM/RAF 全局 */
+function animateBounds(win: BrowserWindow, target: Electron.Rectangle) {
+  cancelPopupBoundsAnimation()
+  const start = win.getBounds()
+  const dx = target.x - start.x
+  const dy = target.y - start.y
+  const dw = target.width - start.width
+  const dh = target.height - start.height
+  // 没有变化则跳过
+  if (Math.abs(dw) < 1 && Math.abs(dh) < 1 && Math.abs(dx) < 1 && Math.abs(dy) < 1) return
+
+  const duration = 220
+  const radius = getPopupSettings().cornerRadius
+  const t0 = Date.now()
+  const easeOut = (t: number) => 1 - Math.pow(1 - t, 3)
+
+  const step = () => {
+    const t = Math.min(1, (Date.now() - t0) / duration)
+    const e = easeOut(t)
+    const nextBounds = {
+      x: Math.round(start.x + dx * e),
+      y: Math.round(start.y + dy * e),
+      width: Math.round(start.width + dw * e),
+      height: Math.round(start.height + dh * e),
+    }
+    win.setBounds(nextBounds, false)
+    applyPopupWindowShape(win, nextBounds.width, nextBounds.height, radius)
+    if (t < 1) {
+      activeAnimTimer = setTimeout(step, 16)
+    } else {
+      activeAnimTimer = null
+    }
+  }
+  activeAnimTimer = setTimeout(step, 0)
 }
 
 /** 创建独立的 AI 结果窗口 */

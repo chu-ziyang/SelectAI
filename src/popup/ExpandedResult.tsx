@@ -1,200 +1,119 @@
-import { useEffect, useRef, useState, type Ref } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type Ref } from 'react'
 import { motion } from 'framer-motion'
 import {
-  Check, ChevronDown, ChevronRight, Copy, RotateCcw, Send, Square, X,
+  Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square, X,
 } from 'lucide-react'
-import { useChatStore } from '@/stores/chatStore'
 import MarkdownRenderer from '@/components/MarkdownRenderer'
 import ActionIcon from '@/components/ActionIcon'
-import type { ActionConfig, HistoryRecord } from '@/types/models'
+import type { PopupSession, PopupSettings } from '@/types/models'
+import { useToast } from '@/components/Toast'
 
 interface ExpandedResultProps {
-  action: ActionConfig
-  sourceText: string
-  providerId: string
-  modelId: string
-  prompt: string
+  session: PopupSession
+  popup: PopupSettings
   rootRef?: Ref<HTMLDivElement>
+  onRetry: () => void
+  onStop: () => void
   onCollapse: () => void
+  onClose: () => void
 }
 
-interface ConversationTurn {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-}
-
-/**
- * 弹窗工具栏内联展开后的结果卡。
- * 复刻 src/popup/ResultApp.tsx 的核心交互（流式 / 复制 / 重新生成 / 追问），
- * 但针对窄弹窗尺寸做了紧凑处理：
- *   - header 一行：图标 + 动作名 + 操作按钮组
- *   - 主体 13px 行高 1.6，可滚动
- *   - 底部追问输入框常驻（streaming 时禁用）
- *   - 无拖动区（弹窗本身可移动）
- */
 export default function ExpandedResult({
-  action,
-  sourceText,
-  providerId,
-  modelId,
-  prompt,
+  session,
+  popup,
   rootRef,
+  onRetry,
+  onStop,
   onCollapse,
+  onClose,
 }: ExpandedResultProps) {
-  const chatStore = useChatStore()
-  const startedRef = useRef(false)
-  const lastCommittedRef = useRef('')
-  const historySavedRef = useRef(false)
-  const startedAtRef = useRef(performance.now())
+  const { addToast } = useToast()
   const contentRef = useRef<HTMLDivElement>(null)
-  const followUpRef = useRef<HTMLTextAreaElement>(null)
-
-  const [draftSource, setDraftSource] = useState(sourceText)
+  const autoScrollRef = useRef(true)
   const [sourceOpen, setSourceOpen] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [followUp, setFollowUp] = useState('')
-  const [turns, setTurns] = useState<ConversationTurn[]>([])
 
-  const runInitial = () => {
-    startedAtRef.current = performance.now()
-    lastCommittedRef.current = ''
-    historySavedRef.current = false
-    setTurns([])
-    chatStore.clearResult()
-    void chatStore.sendMessage({
-      providerId,
-      modelId,
-      systemPrompt: prompt.replace(/\{\{selected_text\}\}/g, draftSource),
-      userText: draftSource,
-    })
-  }
+  const assistantText = useMemo(() => {
+    const committed = [...session.messages].reverse().find((message) => message.role === 'assistant')?.content || ''
+    return session.streamText || committed
+  }, [session.messages, session.streamText])
 
-  // 首次挂载自动发起
-  useEffect(() => {
-    if (startedRef.current) return
-    startedRef.current = true
-    runInitial()
-    // 进入结果卡后自动聚焦追问框，等流式开始时再放权
-    const t = setTimeout(() => followUpRef.current?.focus(), 80)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const isBusy = session.status === 'preparing' || session.status === 'streaming'
+  const canRetry = Boolean(session.action) && !isBusy
 
-  // 流式回填：把 chatStore.result 当成最后一段 assistant
-  useEffect(() => {
-    if (chatStore.isStreaming || !chatStore.result) return
-    if (chatStore.result === lastCommittedRef.current) return
-    lastCommittedRef.current = chatStore.result
-    setTurns((current) => {
-      // 若最后一段是 assistant 且正在被流式填充，则就地更新；否则追加
-      const last = current[current.length - 1]
-      if (last && last.role === 'assistant') {
-        return [...current.slice(0, -1), { ...last, content: chatStore.result }]
-      }
-      return [
-        ...current,
-        { id: `assistant_${Date.now()}`, role: 'assistant', content: chatStore.result },
-      ]
-    })
-    if (!historySavedRef.current) {
-      historySavedRef.current = true
-      void saveHistory(chatStore.result)
-    }
-  }, [chatStore.isStreaming, chatStore.result])
-
-  // 滚动到底
   useEffect(() => {
     const viewport = contentRef.current
-    if (!viewport) return
+    if (!viewport || !autoScrollRef.current) return
     viewport.scrollTop = viewport.scrollHeight
-  }, [turns, chatStore.result, chatStore.isStreaming])
+  }, [assistantText, session.status])
 
-  const saveHistory = async (resultText: string) => {
-    const api = window.electronAPI
-    if (!api) return
-    const settings = await api.store.get('settings') as { saveHistory?: boolean; historyRetentionDays?: number } | undefined
-    if (settings?.saveHistory === false) return
-
-    const retentionDays = settings?.historyRetentionDays || 30
-    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
-    const existing = ((await api.store.get('history')) || []) as HistoryRecord[]
-    const record: HistoryRecord = {
-      id: `h_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      selectedText: draftSource,
-      actionId: action.id,
-      actionName: action.name,
-      providerId,
-      modelId,
-      resultText,
-      status: 'success',
-      latencyMs: Math.round(performance.now() - startedAtRef.current),
-      createdAt: new Date().toISOString(),
-    }
-    await api.store.set('history', [
-      ...existing.filter((item) => new Date(item.createdAt).getTime() >= cutoff),
-      record,
-    ].slice(-500))
+  const handleScroll = () => {
+    const viewport = contentRef.current
+    if (!viewport) return
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+    autoScrollRef.current = distanceFromBottom < 32
   }
 
   const handleCopy = async () => {
-    const latest = chatStore.result || [...turns].reverse().find((turn) => turn.role === 'assistant')?.content
-    if (!latest) return
-    await navigator.clipboard.writeText(latest)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1600)
+    if (!assistantText) return
+    try {
+      await navigator.clipboard.writeText(assistantText)
+      setCopied(true)
+      addToast('success', '已复制到剪贴板', 1400)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      addToast('error', '复制失败，请手动选择复制', 1800)
+    }
   }
 
-  const handleFollowUp = async () => {
-    const question = followUp.trim()
-    if (!question || chatStore.isStreaming) return
-
-    const context = turns
-      .map((turn) => `${turn.role === 'user' ? '用户' : '助手'}：${turn.content}`)
-      .join('\n\n')
-    setTurns((current) => [
-      ...current,
-      { id: `user_${Date.now()}`, role: 'user', content: question },
-    ])
-    setFollowUp('')
-    lastCommittedRef.current = ''
-
-    await chatStore.sendMessage({
-      providerId,
-      modelId,
-      systemPrompt: `${prompt}\n\n以下是此前对话，请结合上下文继续回答：\n${context}`,
-      userText: question,
-    })
-  }
-
-  const streaming = chatStore.isStreaming
-  const hasContent = turns.length > 0 || chatStore.result || chatStore.error
+  const errorKind = useMemo(() => {
+    const err = (session.error || '').toLowerCase()
+    if (err.includes('网络') || err.includes('timeout') || err.includes('fetch')) return '网络好像断开了'
+    if (err.includes('key') || err.includes('401') || err.includes('无效')) return 'API Key 无效'
+    if (err.includes('频繁') || err.includes('429') || err.includes('限流')) return '请求太频繁了'
+    if (err.includes('额度') || err.includes('402')) return '当前账号额度不足'
+    if (err.includes('取消') || err.includes('cancel')) return '已取消生成'
+    return '生成失败了'
+  }, [session.error])
 
   return (
     <motion.div
       ref={rootRef}
+      layoutId="popup-shell"
       id="popup-root"
       className="expanded-result-shell"
-      initial={{ opacity: 0, scale: 0.98, y: 4 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.98, y: 4 }}
-      transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+      style={{
+        ['--popup-bg-alpha' as any]: popup.opacity / 100,
+        ['--popup-radius' as any]: `${popup.cornerRadius}px`,
+        borderRadius: popup.cornerRadius,
+        transformOrigin: 'top left',
+      } as CSSProperties}
+      initial={{ opacity: 0.98, clipPath: 'inset(0 0 calc(100% - 40px) 0 round var(--popup-radius, 12px))' }}
+      animate={{
+        opacity: 1,
+        clipPath: 'inset(0 0 0 0 round var(--popup-radius, 12px))',
+      }}
+      exit={{
+        opacity: 0,
+        clipPath: 'inset(0 0 calc(100% - 40px) 0 round var(--popup-radius, 12px))',
+      }}
+      transition={{
+        duration: 0.22,
+        ease: [0.2, 0.8, 0.2, 1],
+        layout: { duration: 0.28, ease: [0.2, 0.8, 0.2, 1] },
+      }}
     >
-      <header className="expanded-result-header no-drag">
+      <header className="expanded-result-header drag-region">
         <span className="expanded-result-title">
           <span className="expanded-result-icon">
-            <ActionIcon icon={action.icon} size={14} />
+            {session.action && <ActionIcon icon={session.action.icon} size={14} />}
           </span>
-          <span className="expanded-result-name">{action.name}</span>
-          <span className="expanded-result-model">{modelId}</span>
+          <span className="expanded-result-name">{session.action?.name || 'AI 结果'}</span>
+          {session.modelId && <span className="expanded-result-model">{session.modelId}</span>}
         </span>
         <div className="expanded-result-actions no-drag">
-          {streaming ? (
-            <button
-              onClick={() => chatStore.cancelRequest()}
-              className="expanded-result-icon-btn text-[#FF3B30]"
-              title="停止生成"
-            >
+          {isBusy ? (
+            <button onClick={onStop} className="expanded-result-icon-btn text-[#FF3B30]" title="停止生成">
               <Square size={13} />
             </button>
           ) : (
@@ -203,111 +122,93 @@ export default function ExpandedResult({
                 onClick={handleCopy}
                 className="expanded-result-icon-btn"
                 title="复制最新回答"
-                disabled={!hasContent}
+                disabled={!assistantText}
               >
                 {copied ? <Check size={13} className="text-[#34C759]" /> : <Copy size={13} />}
               </button>
               <button
-                onClick={runInitial}
+                onClick={onRetry}
                 className="expanded-result-icon-btn"
                 title="重新生成"
-                disabled={!hasContent}
+                disabled={!canRetry}
               >
                 <RotateCcw size={13} />
               </button>
             </>
           )}
-          <button
-            onClick={onCollapse}
-            className="expanded-result-icon-btn"
-            title="收为工具栏"
-          >
+          <button onClick={onCollapse} className="expanded-result-icon-btn" title="收为工具栏">
             <ChevronDown size={13} />
           </button>
-          <button
-            onClick={() => window.electronAPI?.popup.close()}
-            className="expanded-result-icon-btn"
-            title="关闭"
-          >
+          <button onClick={onClose} className="expanded-result-icon-btn" title="关闭">
             <X size={13} />
           </button>
         </div>
       </header>
 
       <button
-        onClick={() => setSourceOpen(!sourceOpen)}
+        onClick={() => setSourceOpen((open) => !open)}
         className="expanded-result-source-toggle no-drag"
         title={sourceOpen ? '收起原文' : '展开原文'}
       >
         {sourceOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <span>原文</span>
-        {!sourceOpen && <span className="expanded-result-source-preview">{draftSource}</span>}
+        {!sourceOpen && <span className="expanded-result-source-preview">{session.selectedText}</span>}
       </button>
 
       {sourceOpen && (
         <div className="expanded-result-source-edit no-drag">
-          <textarea
-            value={draftSource}
-            onChange={(event) => setDraftSource(event.target.value)}
-            rows={3}
-            className="field-surface w-full resize-none text-xs leading-relaxed"
-            spellCheck={false}
-          />
+          <div className="field-surface max-h-24 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed">
+            {session.selectedText}
+          </div>
         </div>
       )}
 
-      <main ref={contentRef} className="expanded-result-body">
-        {turns.length === 0 && !chatStore.result && chatStore.error && (
-          <div className="expanded-result-error">
-            <p>{chatStore.error}</p>
-            <button onClick={runInitial} className="expanded-result-retry">重试</button>
+      <main ref={contentRef} className="expanded-result-body" onScroll={handleScroll}>
+        {session.status === 'error' ? (
+          <div className="expanded-result-error" role="alert">
+            <div className="error-title">{errorKind}</div>
+            <div className="error-msg">{session.error}</div>
+            <div className="error-tip">可以重试，或到模型管理检查配置</div>
+            <button onClick={onRetry} className="expanded-result-retry" disabled={!canRetry}>
+              <RotateCcw size={12} />
+              <span>重新生成</span>
+            </button>
+          </div>
+        ) : (
+          <div className="expanded-result-document">
+            {assistantText ? (
+              <>
+                <MarkdownRenderer content={assistantText} />
+                {isBusy && <span className="streaming-cursor" aria-hidden />}
+              </>
+            ) : (
+              <div className="thinking-text">正在连接模型…</div>
+            )}
           </div>
         )}
-        {turns.length === 0 && !chatStore.result && !chatStore.error && streaming && (
-          <div className="thinking-text">正在思考…</div>
-        )}
-        <div className="space-y-3">
-          {turns.map((turn) => (
-            turn.role === 'user' ? (
-              <div key={turn.id} className="expanded-result-user">
-                {turn.content}
-              </div>
-            ) : (
-              <div key={turn.id} className="result-answer">
-                <MarkdownRenderer content={turn.content} />
-              </div>
-            )
-          ))}
-        </div>
       </main>
 
       <footer className="expanded-result-footer no-drag">
-        <div className="expanded-result-input-wrap">
-          <textarea
-            ref={followUpRef}
-            value={followUp}
-            onChange={(event) => setFollowUp(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                void handleFollowUp()
-              }
-            }}
-            rows={1}
-            disabled={chatStore.isStreaming}
-            className="expanded-result-input"
-            placeholder={chatStore.isStreaming ? '回答生成中…' : '继续追问，Enter 发送'}
-            spellCheck={false}
-          />
-          <button
-            onClick={() => void handleFollowUp()}
-            disabled={!followUp.trim() || chatStore.isStreaming}
-            className="expanded-result-send"
-            title="发送"
-          >
-            <Send size={13} />
-          </button>
-        </div>
+        {isBusy && (
+          <div className="streaming-progress" aria-live="polite">
+            <span className="dots" aria-hidden><span /><span /><span /></span>
+            <span>{session.status === 'preparing' ? '正在连接模型' : '正在生成回复'}</span>
+            <span className="count">{assistantText.length} 字</span>
+          </div>
+        )}
+        {!isBusy && (session.latencyMs != null || session.tokenUsage?.totalTokens != null) && (
+          <div className="result-meta" aria-live="polite">
+            <div className="result-meta-stats">
+              {session.latencyMs != null && <span>{(session.latencyMs / 1000).toFixed(1)}s</span>}
+              {session.tokenUsage?.totalTokens != null && (
+                <>
+                  {session.latencyMs != null && <span className="sep">·</span>}
+                  <span>{session.tokenUsage.totalTokens} tokens</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </footer>
     </motion.div>
   )

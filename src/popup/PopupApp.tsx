@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { useActionStore } from '@/stores/actionStore'
 import { useModelStore } from '@/stores/modelStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { useChatStore } from '@/stores/chatStore'
+import { usePopupSessionStore } from '@/stores/popupSessionStore'
 import { compilePrompt } from '@/services/promptEngine'
 import type { ActionConfig } from '@/types/models'
 import { useKeyboardNav } from './useKeyboardNav'
@@ -11,28 +11,43 @@ import { useI18n } from '@/i18n/useI18n'
 import SelectionToolbar from './SelectionToolbar'
 import ExpandedResult from './ExpandedResult'
 
-type View = 'idle' | 'expanded'
+function estimateToolbarWidth(actions: Array<Pick<ActionConfig, 'name'>>, popupWidth: number, isVertical: boolean, isIconOnly: boolean) {
+  if (isVertical) return popupWidth
+  const contentWidth = actions.reduce((sum, action) => {
+    if (isIconOnly) return sum + 30
+    return sum + Math.max(52, Math.min(120, action.name.length * 14 + 38))
+  }, 8)
+  return Math.min(720, Math.max(180, popupWidth, contentWidth))
+}
+
+function resultBounds(popupWidth: number, popupMaxHeight: number) {
+  return {
+    width: Math.min(720, Math.max(360, popupWidth)),
+    height: Math.max(300, popupMaxHeight),
+  }
+}
 
 export default function PopupApp() {
   const { t } = useI18n()
   const { actions, loadActions } = useActionStore()
   const { providers, loadProviders } = useModelStore()
   const { app, popup, loadSettings } = useSettingsStore()
-  const chatStore = useChatStore()
+  const { session, start, cancel, clearForToolbar, hide } = usePopupSessionStore()
 
-  const [selectedText, setSelectedText] = useState('')
   const [notice, setNotice] = useState('')
-  const [isVisible, setIsVisible] = useState(true)
-  const [view, setView] = useState<View>('idle')
-  const [activeAction, setActiveAction] = useState<ActionConfig | null>(null)
-  const [activeParams, setActiveParams] = useState<{
-    providerId: string
-    modelId: string
-    prompt: string
-  } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const pendingPayloadIdRef = useRef('')
 
-  // 应用主题到弹窗
+  const enabledActions = useMemo(() => actions
+    .filter((action) => action.enabled)
+    .sort((a, b) => a.order - b.order), [actions])
+  const isVertical = popup.layout === 'vertical'
+  const isIconOnly = popup.layout === 'icon-only'
+  const visible = session.status !== 'hidden'
+  const toolbarWidth = estimateToolbarWidth(enabledActions, popup.width, isVertical, isIconOnly)
+  const toolbarHeight = isVertical ? Math.max(44, enabledActions.length * 32 + 8) : 40
+  const fixedResultBounds = resultBounds(popup.width, popup.maxHeight)
+
   useEffect(() => {
     const root = document.documentElement
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -49,150 +64,147 @@ export default function PopupApp() {
   }, [app.theme])
 
   useEffect(() => {
-    loadActions()
-    loadProviders()
-    loadSettings()
+    void loadActions()
+    void loadProviders()
+    void loadSettings()
+
     const params = new URLSearchParams(window.location.hash.split('?')[1] || '')
     const text = params.get('text')
-    if (text) setSelectedText(decodeURIComponent(text))
-  }, [])
+    if (text) {
+      clearForToolbar(`legacy_${Date.now()}`, decodeURIComponent(text))
+    }
+  }, [clearForToolbar, loadActions, loadProviders, loadSettings])
 
-  const enabledActions = actions
-    .filter((a) => a.enabled)
-    .sort((a, b) => a.order - b.order)
-  const isVertical = popup.layout === 'vertical'
-  const isIconOnly = popup.layout === 'icon-only'
-
-  // 测量最终尺寸并通知主进程。两种 view 共用同一测量循环：
-  //   - idle：贴按钮宽度，最多 720
-  //   - expanded：贴内容尺寸，宽度按 popup.width，最大 maxHeight
   useEffect(() => {
-    const fitWindow = () => {
-      const el = rootRef.current
-      if (!el) return
-      const naturalWidth = Math.max(el.scrollWidth, el.getBoundingClientRect().width)
-      const naturalHeight = Math.max(el.scrollHeight, el.getBoundingClientRect().height)
-      const width = Math.ceil(
-        view === 'expanded'
-          ? Math.min(Math.max(naturalWidth, 360), 720)
-          : (isVertical ? popup.width : Math.min(naturalWidth, 720)),
-      )
-      const height = Math.ceil(Math.max(naturalHeight, view === 'expanded' ? 280 : 40))
-      window.electronAPI?.popup?.resize(width, height)
-    }
-    const frame = requestAnimationFrame(fitWindow)
-    const observer = new ResizeObserver(fitWindow)
-    if (rootRef.current) observer.observe(rootRef.current)
-    return () => {
-      cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [enabledActions, view, activeAction, isVertical, popup.layout, popup.iconSize, popup.width])
+    const dispose = window.electronAPI?.popup.onSelectionPayload((payload) => {
+      pendingPayloadIdRef.current = payload.id
+      setNotice('')
+      void cancel()
+      void window.electronAPI?.popup?.setFocusLock(false)
+      clearForToolbar(payload.id, payload.text)
+      void (async () => {
+        await window.electronAPI?.popup?.resize(toolbarWidth, toolbarHeight)
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+        if (pendingPayloadIdRef.current === payload.id) {
+          await window.electronAPI?.popup?.present()
+        }
+      })()
+    })
+    void window.electronAPI?.popup.ready()
+    return dispose
+  }, [cancel, clearForToolbar, toolbarWidth, toolbarHeight])
 
-  // 解析模型
+  useEffect(() => window.electronAPI?.popup.onStoreUpdated((event) => {
+    if (event.key === 'actions') void loadActions()
+    if (event.key === 'providers') void loadProviders()
+    if (event.key === 'settings' || event.key === 'popupSettings') void loadSettings()
+  }), [loadActions, loadProviders, loadSettings])
+
+  useEffect(() => window.electronAPI?.popup.onHidden(() => {
+    void cancel()
+    hide()
+  }), [cancel, hide])
+
+  useEffect(() => {
+    if (session.status === 'toolbar') {
+      void window.electronAPI?.popup?.resize(toolbarWidth, toolbarHeight)
+    } else if (visible) {
+      void window.electronAPI?.popup?.resize(fixedResultBounds.width, fixedResultBounds.height)
+    }
+  }, [session.status, visible, toolbarWidth, toolbarHeight, fixedResultBounds.width, fixedResultBounds.height])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 1800)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
   const resolveModel = useCallback((action: ActionConfig) => {
     if (action.modelMode === 'specific' && action.modelId) {
-      for (const p of providers) {
-        const m = (p.models || []).find(m2 => m2.id === action.modelId && m2.enabled)
-        if (m) return { providerId: p.id, modelId: m.id }
+      for (const provider of providers) {
+        const model = (provider.models || []).find((item) => item.id === action.modelId && item.enabled)
+        if (model) return { providerId: provider.id, modelId: model.id }
       }
     }
-    for (const p of providers) {
-      const m = (p.models || []).find(m2 => m2.isDefault && m2.enabled)
-      if (m) return { providerId: p.id, modelId: m.id }
+    for (const provider of providers) {
+      const model = (provider.models || []).find((item) => item.isDefault && item.enabled)
+      if (model) return { providerId: provider.id, modelId: model.id }
     }
-    for (const p of providers) {
-      const m = (p.models || []).find(m2 => m2.enabled)
-      if (m) return { providerId: p.id, modelId: m.id }
+    for (const provider of providers) {
+      const model = (provider.models || []).find((item) => item.enabled)
+      if (model) return { providerId: provider.id, modelId: model.id }
     }
     return null
   }, [providers])
 
-  // 进入展开态：在同一弹窗里发起 AI 请求
-  const enterExpanded = useCallback(async (action: ActionConfig) => {
-    const model = resolveModel(action)
-    const text = selectedText.trim()
+  const startAction = useCallback((action: ActionConfig) => {
+    const text = session.selectedText.trim()
     if (!text) {
       setNotice('没有读取到选中文字')
       return
     }
+
+    const model = resolveModel(action)
     if (!model) {
       setNotice('请先启用一个可用模型')
       return
     }
 
-    const { result: prompt } = compilePrompt(action.systemPrompt, {
+    const { result } = compilePrompt(action.systemPrompt, {
       selected_text: text,
       target_language: action.parameters?.targetLanguage || '中文',
       tone: action.parameters?.tone || '',
       audience: action.parameters?.audience || '',
     })
 
-    setActiveAction(action)
-    setActiveParams({ providerId: model.providerId, modelId: model.modelId, prompt })
-    setView('expanded')
-
-    // 展开期间不响应 blur 自动关闭（用户可能在阅读 / 输入追问）
     void window.electronAPI?.popup?.setFocusLock(true)
-  }, [selectedText, resolveModel])
+    void start({
+      sessionId: session.id || `ps_${Date.now()}`,
+      selectedText: text,
+      action,
+      providerId: model.providerId,
+      modelId: model.modelId,
+      prompt: result,
+    })
+  }, [resolveModel, session.id, session.selectedText, start])
 
-  // 收起回工具栏：取消流式、清空 chatStore、释放焦点锁
   const collapseToToolbar = useCallback(() => {
-    setView('idle')
-    setActiveAction(null)
-    setActiveParams(null)
-    void chatStore.cancelRequest()
-    chatStore.clearResult()
+    void cancel()
     void window.electronAPI?.popup?.setFocusLock(false)
-  }, [chatStore])
+    clearForToolbar(session.id || `ps_${Date.now()}`, session.selectedText)
+    void window.electronAPI?.popup?.resize(toolbarWidth, toolbarHeight)
+  }, [cancel, clearForToolbar, session.id, session.selectedText, toolbarHeight, toolbarWidth])
 
-  // 真正关掉弹窗
   const closePopup = useCallback(() => {
-    if (!isVisible) return
-    if (popup.exitAnimation === 'none') {
-      void window.electronAPI?.popup?.setFocusLock(false)
-      window.electronAPI?.popup.close()
-      return
-    }
-    setIsVisible(false)
+    void cancel()
     void window.electronAPI?.popup?.setFocusLock(false)
-    window.setTimeout(() => window.electronAPI?.popup.close(), popup.animationDurationMs)
-  }, [isVisible, popup.exitAnimation, popup.animationDurationMs])
+    hide()
+    void window.electronAPI?.popup?.hide()
+  }, [cancel, hide])
 
-  // 旧版兼容：点 X/外部触发时仍走这条关闭路径
-  const handleClose = useCallback(() => {
-    closePopup()
-  }, [closePopup])
+  useEffect(() => window.electronAPI?.popup.onRequestClose(closePopup), [closePopup])
 
-  useEffect(() => {
-    return window.electronAPI?.popup.onRequestClose(handleClose)
-  }, [handleClose])
-
-  useEffect(() => {
-    if (!notice) return
-    const timer = setTimeout(() => setNotice(''), 1800)
-    return () => clearTimeout(timer)
-  }, [notice])
-
-  // 卸载时兜底释放焦点锁
   useEffect(() => () => {
+    void cancel()
     void window.electronAPI?.popup?.setFocusLock(false)
-  }, [])
+  }, [cancel])
 
   useKeyboardNav({
-    enabled: popup.escClose,
-    // 数字键只在 idle 工具栏态生效，避免在结果卡里误触历史动作
-    allowDigitKeys: view === 'idle',
+    enabled: visible && popup.escClose,
+    allowDigitKeys: session.status === 'toolbar',
     actionCount: enabledActions.length,
-    onAction: (i) => enterExpanded(enabledActions[i]),
+    onAction: (index) => {
+      const action = enabledActions[index]
+      if (action) startAction(action)
+    },
     onClose: closePopup,
-    // 展开态时 Esc 优先收起（不关弹窗）；再按一次 Esc 才走 closePopup
-    onCollapse: view === 'expanded' ? collapseToToolbar : undefined,
+    onCollapse: session.status !== 'toolbar' ? collapseToToolbar : undefined,
   })
 
   return (
-    <AnimatePresence mode="wait" initial={false}>
-      {isVisible && view === 'idle' && (
+    <AnimatePresence mode="sync" initial={false}>
+      {visible && session.status === 'toolbar' && (
         <SelectionToolbar
           key="toolbar"
           actions={enabledActions}
@@ -200,19 +212,19 @@ export default function PopupApp() {
           emptyText={t('popup.noActions')}
           notice={notice}
           rootRef={rootRef}
-          onAction={(action) => enterExpanded(action as ActionConfig)}
+          onAction={(action) => startAction(action as ActionConfig)}
         />
       )}
-      {isVisible && view === 'expanded' && activeAction && activeParams && (
+      {visible && session.status !== 'toolbar' && (
         <ExpandedResult
-          key="expanded"
-          action={activeAction}
-          sourceText={selectedText}
-          providerId={activeParams.providerId}
-          modelId={activeParams.modelId}
-          prompt={activeParams.prompt}
+          key={session.id}
+          session={session}
+          popup={popup}
           rootRef={rootRef}
+          onRetry={() => session.action && startAction(session.action)}
+          onStop={() => void cancel()}
           onCollapse={collapseToToolbar}
+          onClose={closePopup}
         />
       )}
     </AnimatePresence>
