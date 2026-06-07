@@ -1,6 +1,6 @@
 {
   "name": "text-helper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI划词助手 - 智能文字处理桌面工具",
   "main": "dist-electron/main.js",
   "scripts": {
