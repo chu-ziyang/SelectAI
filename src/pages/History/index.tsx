@@ -5,6 +5,7 @@ import { useActionStore } from '@/stores/actionStore'
 import { useToast } from '@/components/Toast'
 import { useI18n } from '@/i18n/useI18n'
 import SelectMenu from '@/components/SelectMenu'
+import ConfirmDialog from '@/components/ConfirmDialog'
 
 export default function HistoryPage() {
   const { t } = useI18n()
@@ -15,6 +16,7 @@ export default function HistoryPage() {
   const [actionFilter, setActionFilter] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null)
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
 
   useEffect(() => {
     loadHistory()
@@ -45,7 +47,6 @@ export default function HistoryPage() {
   }
 
   const handleClearAll = async () => {
-    if (!confirm(t('history.clearConfirm'))) return
     const api = window.electronAPI
     if (!api) return
     await api.store.set('history', [])
@@ -113,7 +114,7 @@ export default function HistoryPage() {
           className="w-[160px]"
         />
         <button
-          onClick={handleClearAll}
+          onClick={() => setClearConfirmOpen(true)}
           className="toolbar-button-muted text-[#FF3B30] hover:bg-[#FF3B30]/10 hover:text-[#FF3B30] shrink-0"
         >
           <Trash2 size={13} />
@@ -197,6 +198,20 @@ export default function HistoryPage() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={clearConfirmOpen}
+        title={t('history.clear')}
+        message={t('history.clearConfirm')}
+        confirmText={t('history.clear')}
+        cancelText={t('common.cancel')}
+        danger
+        onConfirm={() => {
+          setClearConfirmOpen(false)
+          handleClearAll()
+        }}
+        onCancel={() => setClearConfirmOpen(false)}
+      />
     </div>
   )
 }

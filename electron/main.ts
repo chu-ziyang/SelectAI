@@ -26,6 +26,44 @@ function sanitizeProvider(provider: any) {
   return safeProvider
 }
 
+/**
+ * 校验 provider baseUrl，防止把 API Key 发到错误目标：
+ * - 必须 http/https（拒 file://、javascript: 等）
+ * - 不允许 URL 内含用户名/密码（避免 https://attacker:x@victim.com 钓鱼）
+ * - http 仅允许 localhost / 127.x / ::1（保留本地 LLM 如 Ollama 的合法用例），
+ *   公网必须 https（否则 Bearer Key 会以明文走中间路径）
+ * - 拒绝云元数据地址（AWS/GCP IMDS），无论协议
+ */
+function validateProviderUrl(input: string): { ok: true } | { ok: false; error: string } {
+  let parsed: URL
+  try {
+    parsed = new URL(input.trim())
+  } catch {
+    return { ok: false, error: 'API 地址格式无效，请填写完整 URL（如 https://api.example.com/v1）' }
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'API 地址只支持 https:// 或 http:// 协议' }
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, error: 'API 地址不允许包含用户名/密码' }
+  }
+  const host = parsed.hostname.toLowerCase()
+  const isLocal =
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    /^127\./.test(host) ||
+    host === '[::1]' ||
+    host === '::1'
+  if (parsed.protocol === 'http:' && !isLocal) {
+    return { ok: false, error: 'http:// 仅支持本机地址；公网请改用 https://，否则 API Key 会以明文传输' }
+  }
+  // 云元数据：AWS IMDS / GCP metadata / Alibaba metadata 等，全部拦
+  if (/^169\.254\./.test(host) || host === 'metadata.google.internal' || host === 'metadata' || host === '100.100.100.200') {
+    return { ok: false, error: '不允许访问云元数据服务地址' }
+  }
+  return { ok: true }
+}
+
 function applyAppSettings(settings: any) {
   if (!settings || typeof settings !== 'object') return
   if (typeof settings.autoStart === 'boolean') {
@@ -37,6 +75,9 @@ function applyAppSettings(settings: any) {
 }
 
 async function requestProviderModels(provider: any, apiKey: string) {
+  // 防御性二次校验：即使存储被旁路污染，fetch 前也卡一道
+  const urlCheck = validateProviderUrl(String(provider.baseUrl || ''))
+  if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
   const url = `${provider.baseUrl.replace(/\/+$/, '')}/models`
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -231,6 +272,8 @@ function setupIPC() {
     if (!name || !baseUrl || !apiKey) {
       return { ok: false, error: '请填写完整的厂商信息' }
     }
+    const urlCheck = validateProviderUrl(baseUrl)
+    if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
     if (providers.some((p: any) => String(p.baseUrl).replace(/\/+$/, '') === baseUrl.replace(/\/+$/, ''))) {
       return { ok: false, error: '这个 API 地址已经添加过了' }
     }
@@ -269,6 +312,8 @@ function setupIPC() {
     if (typeof data.updates.baseUrl === 'string') {
       const baseUrl = data.updates.baseUrl.trim()
       if (!baseUrl) return { ok: false, error: 'API 地址不能为空' }
+      const urlCheck = validateProviderUrl(baseUrl)
+      if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
       const duplicate = providers.some((p: any) => p.id !== data.id && String(p.baseUrl).replace(/\/+$/, '') === baseUrl.replace(/\/+$/, ''))
       if (duplicate) return { ok: false, error: '这个 API 地址已经添加过了' }
       data.updates.baseUrl = baseUrl
@@ -282,15 +327,6 @@ function setupIPC() {
     providers[idx] = { ...providers[idx], ...data.updates, updatedAt: new Date().toISOString() }
     store.set('providers', providers)
     return { ok: true, provider: sanitizeProvider(providers[idx]) }
-  })
-
-  ipcMain.handle('provider:reveal-key', (_e, providerId: string) => {
-    const providers = store.get('providers', []) as any[]
-    const provider = providers.find((p: any) => p.id === providerId)
-    if (!provider) return { ok: false, error: '厂商不存在' }
-    const apiKey = decryptApiKey(provider.apiKeyEncrypted)
-    if (!apiKey) return { ok: false, error: '无法解密 API Key' }
-    return { ok: true, apiKey }
   })
 
   // ---- 模型管理 ----
@@ -325,6 +361,8 @@ function setupIPC() {
 
   // ---- 测试连接 & 拉取模型 ----
   ipcMain.handle('provider:test-config', async (_e, provider: { baseUrl: string; apiKey: string }) => {
+    const urlCheck = validateProviderUrl(String(provider.baseUrl || ''))
+    if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
     try {
       const result = await requestProviderModels({ ...provider, id: 'preview' }, provider.apiKey)
       return result.ok ? { ok: true, models: result.models } : result
@@ -368,8 +406,10 @@ function setupIPC() {
           const previous = previousById.get(model.id)
           return previous ? { ...model, ...previous, displayName: model.displayName || previous.displayName } : model
         })
-        // 确保每个厂商最多一个默认：旧默认仍在新列表且仍 enabled → 保留；否则清空全部，把第一个 enabled 设为默认。
-        // 同时把不再 enabled 的旧默认清掉，避免数据里残留两个 isDefault。
+        // 确保全局只有一个默认模型：
+        // - 旧默认仍在新列表且仍 enabled → 保留（清掉本厂商其他模型的默认标记）
+        // - 否则，若其他厂商已经存在默认 → 本次不自动设默认，避免和现有默认冲突
+        // - 否则（系统当前没有任何默认）→ 把本厂商第一个 enabled 设为默认
         const previousDefault = previousModels.find((m: any) => m.isDefault)
         const previousDefaultStillEnabled = previousDefault && mergedModels.some(
           (m: any) => m.id === previousDefault.id && m.enabled,
@@ -378,8 +418,13 @@ function setupIPC() {
           mergedModels.forEach((m: any) => { m.isDefault = m.id === previousDefault!.id })
         } else {
           mergedModels.forEach((m: any) => { m.isDefault = false })
-          const firstEnabled = mergedModels.find((m: any) => m.enabled)
-          if (firstEnabled) firstEnabled.isDefault = true
+          const hasGlobalDefault = providers.some((other: any) =>
+            other.id !== providerId && (other.models || []).some((m: any) => m.isDefault),
+          )
+          if (!hasGlobalDefault) {
+            const firstEnabled = mergedModels.find((m: any) => m.enabled)
+            if (firstEnabled) firstEnabled.isDefault = true
+          }
         }
         providers[pIdx].models = mergedModels
         providers[pIdx].updatedAt = new Date().toISOString()
@@ -404,6 +449,10 @@ function setupIPC() {
 
     const model = (p.models || []).find((m: any) => m.id === params.modelId)
     if (!model || !model.enabled) return { ok: false, error: '模型不可用' }
+
+    // 防御性校验：拒绝把 Bearer Key 发到非法/内网/云元数据地址
+    const urlCheck = validateProviderUrl(String(p.baseUrl || ''))
+    if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
 
     const key = decryptApiKey(p.apiKeyEncrypted)
     if (!key) return { ok: false, error: '无法解密 API Key' }
@@ -533,8 +582,8 @@ function setupIPC() {
     closePopupWindow()
     return { ok: true }
   })
-  ipcMain.handle('popup:hide', () => {
-    hidePopupWindow()
+  ipcMain.handle('popup:hide', (_e, data?: { sessionId?: string }) => {
+    hidePopupWindow(data?.sessionId)
     return { ok: true }
   })
   ipcMain.handle('popup:show-selection', (_e, data: { text: string; anchor?: Electron.Point; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => {
@@ -547,8 +596,25 @@ function setupIPC() {
   })
 
   ipcMain.handle('shell:open-external', (_e, url: string) => {
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    // 严校验：必须能严格解析、且原串与重新序列化一致（防 NUL 截断/不可见字符绕过）；
+    // 只允许 http/https；禁 userinfo（防 https://attacker:x@victim.com 钓鱼）
+    if (typeof url !== 'string' || url.length === 0 || url.length > 2048) {
+      return { ok: false, error: '链接无效' }
+    }
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return { ok: false, error: '链接格式无效' }
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { ok: false, error: '只允许 http(s) 链接' }
+    }
+    if (parsed.username || parsed.password) {
+      return { ok: false, error: '链接不允许包含用户名/密码' }
+    }
+    if (parsed.href !== url) {
+      return { ok: false, error: '链接含非法字符' }
     }
     return shell.openExternal(url).then(() => ({ ok: true })).catch((err: Error) => ({ ok: false, error: err.message }))
   })
@@ -577,7 +643,35 @@ function setupIPC() {
 
 // ==================== 生命周期 ====================
 
+/** 启动时调用：保证全局最多只有一个模型的 isDefault=true。 */
+function ensureSingleDefault() {
+  const store = createStore()
+  const providers = (store.get('providers', []) as any[])
+  if (!Array.isArray(providers) || providers.length === 0) return
+
+  const defaults: { pIdx: number; mIdx: number; model: any }[] = []
+  providers.forEach((p, pIdx) => {
+    ;(p.models || []).forEach((m: any, mIdx: number) => {
+      if (m.isDefault) defaults.push({ pIdx, mIdx, model: m })
+    })
+  })
+  if (defaults.length <= 1) return
+
+  console.warn(`[ensureSingleDefault] 检测到 ${defaults.length} 个默认模型，自动清理为 1 个`)
+  // 保留第一个 enabled 的默认；都不 enabled 就保留第一个
+  const keep = defaults.find((d) => d.model.enabled) ?? defaults[0]
+  providers.forEach((p) => {
+    ;(p.models || []).forEach((m: any) => { m.isDefault = false })
+  })
+  providers[keep.pIdx].models[keep.mIdx].isDefault = true
+  store.set('providers', providers)
+}
+
 app.whenReady().then(() => {
+  // 启动时自愈：保证全局最多只有一个模型 isDefault=true。
+  // 历史 bug：旧版 fetch-models 在新厂商拉模型时可能无视其他厂商已有默认，
+  // 制造出多个默认。修复后仍保留此清理作为防御层。
+  ensureSingleDefault()
   setupIPC()
   createMainWindow()
   ensurePopupWindow()

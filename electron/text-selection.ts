@@ -137,7 +137,7 @@ while ($true) {
         Emit-Text "TEXT" $captured
       }
 
-      if ($ctrlHoldPopup) {
+      if ($ctrlHoldPopup -and (-not $autoPopup -or -not $captured)) {
         for ($i = 0; $i -lt 30; $i++) {
           $ctrlDown = (([TextHelperMouse]::GetAsyncKeyState(0x11) -band 0x8000) -ne 0)
           if ($ctrlDown) {

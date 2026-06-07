@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors,
@@ -424,7 +425,7 @@ export default function AddProviderModal({ open, onClose }: Props) {
     </div>
   )
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
       <div
         className="w-[560px] max-h-[88vh] flex flex-col overflow-hidden rounded-2xl border border-[var(--separator)] bg-white/95 shadow-ios-xl backdrop-blur-xl spring-in dark:bg-[var(--bg-secondary)]"
@@ -497,6 +498,7 @@ export default function AddProviderModal({ open, onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

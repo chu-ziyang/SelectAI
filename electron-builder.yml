@@ -9,6 +9,7 @@ files:
   - dist-electron/**/*
   - dist-renderer/**/*
   - public/icon*.png
+  - "!**/*.map"
 
 win:
   target: nsis

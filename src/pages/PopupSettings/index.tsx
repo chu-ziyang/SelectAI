@@ -308,7 +308,6 @@ export default function PopupSettings() {
   const { lang, t } = useI18n()
   const { popup, updatePopup } = useSettingsStore()
   const { loadActions } = useActionStore()
-  const [advanced, setAdvanced] = useState(false)
   const previewCopy = PREVIEW_COPY[lang]
   const styleValue: Extract<LayoutMode, 'horizontal' | 'icon-only'> = popup.layout === 'icon-only' ? 'icon-only' : 'horizontal'
 
@@ -381,9 +380,17 @@ export default function PopupSettings() {
                 onChange={(opacity) => up({ opacity })}
               />
             </SettingRow>
+
+            <SettingRow title="按钮背景">
+              <Switch checked={popup.showButtonBackground} onChange={() => up({ showButtonBackground: !popup.showButtonBackground })} />
+            </SettingRow>
+
+            <SettingRow title="悬停反馈">
+              <Switch checked={popup.showHoverEffect} onChange={() => up({ showHoverEffect: !popup.showHoverEffect })} />
+            </SettingRow>
           </Section>
 
-          <Section title="弹出位置" icon={Move}>
+          <Section title="位置" icon={Move}>
             <SettingRow
               title="相对选中文字"
               desc={previewCopy.currentPlacement.replace('{placement}', previewCopy.placement[popup.placement])}
@@ -411,9 +418,15 @@ export default function PopupSettings() {
             <SettingRow title="垂直偏移">
               <SliderControl min={-60} max={60} step={2} value={popup.offsetY} onChange={(offsetY) => up({ offsetY })} />
             </SettingRow>
+            <SettingRow title="智能避让">
+              <Switch checked={popup.avoidScreenEdge} onChange={() => up({ avoidScreenEdge: !popup.avoidScreenEdge })} />
+            </SettingRow>
+            <SettingRow title="鼠标吸附">
+              <Switch checked={popup.followMouse} onChange={() => up({ followMouse: !popup.followMouse })} />
+            </SettingRow>
           </Section>
 
-          <Section title="关闭方式" icon={Timer}>
+          <Section title="关闭" icon={Timer}>
             <SettingRow title="点击外部关闭" desc="在别处点击时收起弹窗">
               <Switch checked={popup.clickOutsideClose} onChange={() => up({ clickOutsideClose: !popup.clickOutsideClose })} />
             </SettingRow>
@@ -428,80 +441,60 @@ export default function PopupSettings() {
                 <SliderControl min={3} max={15} value={popup.autoHideSeconds} suffix="s" onChange={(autoHideSeconds) => up({ autoHideSeconds })} />
               </SettingRow>
             )}
+            <SettingRow title="新选中替换">
+              <Switch checked={popup.replaceOnNewSelect} onChange={() => up({ replaceOnNewSelect: !popup.replaceOnNewSelect })} />
+            </SettingRow>
           </Section>
 
-          <button onClick={() => setAdvanced((value) => !value)} className="psp-advanced-toggle">
-            <ChevronDown size={15} className={advanced ? 'is-open' : ''} />
-            <span>{advanced ? '收起高级设置' : '展开高级设置'}</span>
-          </button>
-
-          {advanced && (
-            <>
-              <Section title="细节" icon={Wand2}>
-                <SettingRow title="图标大小">
-                  <SliderControl min={16} max={32} value={popup.iconSize} onChange={(iconSize) => up({ iconSize })} />
-                </SettingRow>
-                <SettingRow title="内边距">
-                  <SliderControl min={8} max={32} step={2} value={popup.padding} onChange={(padding) => up({ padding })} />
-                </SettingRow>
-                <SettingRow title="按钮背景">
-                  <Switch checked={popup.showButtonBackground} onChange={() => up({ showButtonBackground: !popup.showButtonBackground })} />
-                </SettingRow>
-                <SettingRow title="悬停反馈">
-                  <Switch checked={popup.showHoverEffect} onChange={() => up({ showHoverEffect: !popup.showHoverEffect })} />
-                </SettingRow>
-                <SettingRow title="智能避让">
-                  <Switch checked={popup.avoidScreenEdge} onChange={() => up({ avoidScreenEdge: !popup.avoidScreenEdge })} />
-                </SettingRow>
-                <SettingRow title="鼠标吸附">
-                  <Switch checked={popup.followMouse} onChange={() => up({ followMouse: !popup.followMouse })} />
-                </SettingRow>
-              </Section>
-
-              <Section title="行为与动画" icon={Timer}>
-                <SettingRow title="新选中替换">
-                  <Switch checked={popup.replaceOnNewSelect} onChange={() => up({ replaceOnNewSelect: !popup.replaceOnNewSelect })} />
-                </SettingRow>
-                <SettingRow title="进入动画">
-                  <SelectMenu<AnimationType>
-                    value={popup.enterAnimation}
-                    options={[
-                      { v: 'scale', label: '缩放弹出' },
-                      { v: 'fade', label: '淡入' },
-                      { v: 'slide-down', label: '下滑入' },
-                      { v: 'none', label: '无动画' },
-                    ]}
-                    onChange={(enterAnimation) => up({ enterAnimation })}
-                  />
-                </SettingRow>
-                <SettingRow title="退出动画">
-                  <SelectMenu<AnimationType>
-                    value={popup.exitAnimation}
-                    options={[
-                      { v: 'fade', label: '淡出' },
-                      { v: 'scale', label: '缩小消失' },
-                      { v: 'slide-up', label: '上滑出' },
-                      { v: 'none', label: '无动画' },
-                    ]}
-                    onChange={(exitAnimation) => up({ exitAnimation })}
-                  />
-                </SettingRow>
-                <SettingRow title="动画时长">
-                  <SliderControl
-                    min={100}
-                    max={400}
-                    step={50}
-                    value={popup.animationDurationMs}
-                    suffix="ms"
-                    inputWidth={74}
-                    onChange={(animationDurationMs) => up({ animationDurationMs })}
-                  />
-                </SettingRow>
-              </Section>
-            </>
-          )}
+          <Section title="细节与动画" icon={Wand2}>
+            <SettingRow title="图标大小">
+              <SliderControl min={16} max={32} value={popup.iconSize} onChange={(iconSize) => up({ iconSize })} />
+            </SettingRow>
+            <SettingRow title="内边距">
+              <SliderControl min={8} max={32} step={2} value={popup.padding} onChange={(padding) => up({ padding })} />
+            </SettingRow>
+            <SettingRow title="进入动画">
+              <SelectMenu<AnimationType>
+                value={popup.enterAnimation}
+                options={[
+                  { v: 'scale', label: '缩放弹出' },
+                  { v: 'fade', label: '淡入' },
+                  { v: 'slide-down', label: '下滑入' },
+                  { v: 'none', label: '无动画' },
+                ]}
+                onChange={(enterAnimation) => up({ enterAnimation })}
+              />
+            </SettingRow>
+            <SettingRow title="退出动画">
+              <SelectMenu<AnimationType>
+                value={popup.exitAnimation}
+                options={[
+                  { v: 'fade', label: '淡出' },
+                  { v: 'scale', label: '缩小消失' },
+                  { v: 'slide-up', label: '上滑出' },
+                  { v: 'none', label: '无动画' },
+                ]}
+                onChange={(exitAnimation) => up({ exitAnimation })}
+              />
+            </SettingRow>
+            <SettingRow title="动画时长">
+              <SliderControl
+                min={100}
+                max={400}
+                step={50}
+                value={popup.animationDurationMs}
+                suffix="ms"
+                inputWidth={74}
+                onChange={(animationDurationMs) => up({ animationDurationMs })}
+              />
+            </SettingRow>
+          </Section>
         </div>
       </div>
     </div>
   )
 }
+
+
+
+

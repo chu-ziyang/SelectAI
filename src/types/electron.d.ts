@@ -13,7 +13,6 @@ export interface ElectronAPI {
     test: (providerId: string) => Promise<{ ok: boolean; models?: unknown[]; error?: string }>
     fetchModels: (providerId: string) => Promise<{ ok: boolean; models?: unknown[]; error?: string }>
     listModels: (providerId: string) => Promise<{ ok: boolean; models?: unknown[]; error?: string }>
-    revealKey: (providerId: string) => Promise<{ ok: boolean; apiKey?: string; error?: string }>
   }
   model: {
     update: (providerId: string, modelId: string, updates: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
@@ -36,7 +35,7 @@ export interface ElectronAPI {
     present: () => Promise<{ ok: boolean }>
     showSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => Promise<{ ok: boolean }>
     updateSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) => Promise<{ ok: boolean }>
-    hide: () => Promise<{ ok: boolean }>
+    hide: (data?: { sessionId?: string }) => Promise<{ ok: boolean }>
     setPinned: (pinned: boolean) => Promise<{ ok: boolean }>
     setFocusLock: (lock: boolean) => Promise<{ ok: boolean }>
     close: () => Promise<{ ok: boolean }>

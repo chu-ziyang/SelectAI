@@ -17,7 +17,6 @@ const electronAPI = {
     test: (providerId: string) => ipcRenderer.invoke('provider:test', providerId),
     fetchModels: (providerId: string) => ipcRenderer.invoke('provider:fetch-models', providerId),
     listModels: (providerId: string) => ipcRenderer.invoke('provider:list-models', providerId),
-    revealKey: (providerId: string) => ipcRenderer.invoke('provider:reveal-key', providerId),
   },
   // 模型管理
   model: {
@@ -48,7 +47,7 @@ const electronAPI = {
       ipcRenderer.invoke('popup:show-selection', data),
     updateSelection: (data: { text: string; anchor?: { x: number; y: number }; reason?: 'auto' | 'ctrl' | 'manual' | 'clipboard' }) =>
       ipcRenderer.invoke('popup:update-selection', data),
-    hide: () => ipcRenderer.invoke('popup:hide'),
+    hide: (data?: { sessionId?: string }) => ipcRenderer.invoke('popup:hide', data),
     setPinned: (pinned: boolean) => ipcRenderer.invoke('popup:set-pinned', pinned),
     setFocusLock: (lock: boolean) => ipcRenderer.invoke('popup:set-focus-lock', lock),
     close: () => ipcRenderer.invoke('popup:close'),

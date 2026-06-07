@@ -11,12 +11,21 @@ let autoHideTimer: ReturnType<typeof setTimeout> | null = null
 let popupShowFallback: ReturnType<typeof setTimeout> | null = null
 let popupCloseFallback: ReturnType<typeof setTimeout> | null = null
 let popupAnchor: Electron.Point | null = null
+// 用户主动拖动窗口后的最近位置。resizePopupWindow 在 toolbar↔展开态切换/
+// ResizeObserver 校准/重新生成等场景下，优先使用这个值而不是 popupAnchor，
+// 避免把用户拖到别处的窗口拉回原划词点。
+let userMovedBounds: Electron.Rectangle | null = null
 let resultPinned = false
 let pendingSelectionPayload: PopupSelectionPayload | null = null
 let pendingSelectionShouldShow = false
+let currentPopupSessionId = ''
 let popupReady = false
 let popupPresentTimer: ReturnType<typeof setTimeout> | null = null
 let activeAnimTimer: NodeJS.Timeout | null = null
+// 刚 show 后的 blur 缓冲期：showInactive 在 Windows 上有时会触发一次伪 blur，
+// 导致 clickOutsideClose 立刻关闭弹窗。300ms 内的 blur 视为误报，忽略。
+let popupShownAt = 0
+const BLUR_GRACE_PERIOD_MS = 300
 
 interface StoredPopupSettings {
   width?: number
@@ -195,8 +204,15 @@ function cancelPopupPresentTimer() {
 
 export function presentPopupWindow(delayMs = 0) {
   cancelPopupPresentTimer()
+  const expectedSessionId = currentPopupSessionId
   popupPresentTimer = setTimeout(() => {
-    if (popupWindow && !popupWindow.isDestroyed() && !popupWindow.isVisible()) {
+    if (
+      expectedSessionId === currentPopupSessionId
+      && popupWindow
+      && !popupWindow.isDestroyed()
+      && !popupWindow.isVisible()
+    ) {
+      popupShownAt = Date.now()  // 进入 blur 缓冲期
       popupWindow.showInactive()
     }
     popupPresentTimer = null
@@ -205,7 +221,14 @@ export function presentPopupWindow(delayMs = 0) {
 
 function emitSelectionPayload(win: BrowserWindow, payload: PopupSelectionPayload, shouldShow: boolean) {
   win.webContents.send('popup:selection-payload', payload)
-  if (!shouldShow) cancelPopupPresentTimer()
+  if (shouldShow) {
+    // 把"何时 show"交给 renderer：它在双 RAF 后会主动调 popup:present，
+    // 那时浏览器已经 paint 出新 toolbar 内容，不会闪过上一次的旧画面。
+    // 这里只挂一个 80ms 兜底，防止 renderer 卡死时窗口永远不显示。
+    presentPopupWindow(80)
+  } else {
+    cancelPopupPresentTimer()
+  }
 }
 
 /**
@@ -300,14 +323,42 @@ export function ensurePopupWindow() {
       clearTimeout(popupPresentTimer)
       popupPresentTimer = null
     }
+    currentPopupSessionId = ''
+    userMovedBounds = null
     if (popupWindow === win) popupWindow = null
   })
 
+  // 用户拖动窗口（或主进程 setBounds）都会触发 move。我们把当前 bounds 持续
+  // 同步到 userMovedBounds，作为 resizePopupWindow 的权威位置源。
+  // 主进程自己 setBounds 时也会触发 move，但 target.x/y 本来就来自这个值，
+  // 所以是稳定不动的；用户拖动则会真正更新它。
+  win.on('move', () => {
+    if (popupWindow !== win || win.isDestroyed()) return
+    userMovedBounds = win.getBounds()
+  })
+  win.on('resize', () => {
+    if (popupWindow !== win || win.isDestroyed()) return
+    userMovedBounds = win.getBounds()
+  })
+
   win.on('blur', () => {
-    if (!settings.clickOutsideClose) return
+    // 刚 show 后的 300ms 内 Windows 会触发一次伪 blur（showInactive 副作用），
+    // 在缓冲期内忽略，避免 clickOutsideClose 误关弹窗
+    const sinceShown = Date.now() - popupShownAt
+    if (sinceShown < BLUR_GRACE_PERIOD_MS) {
+      return
+    }
+    if (!getPopupSettings().clickOutsideClose) return
     if (popupPinned || popupFocusLock) return
     if (popupWindow !== win) return
-    requestPopupWindowClose()
+    if (popupWindow && !popupWindow.isDestroyed()) {
+      // 发 popup:hidden 让 renderer 取消正在跑的 AI 流（否则 streaming 中点别处会
+      // 让 main 的 activeAbortController 成孤儿，fetch 持续向已隐藏 webContents send）。
+      // renderer 在 onSelectionPayload 时会设 ignoreHiddenUntilRef = now+800，
+      // 二次划词的旧 blur 落在守卫窗口内会被忽略，不会把新工具栏误清。
+      popupWindow.webContents.send('popup:hidden')
+      popupWindow.hide()
+    }
   })
 
   return win
@@ -334,6 +385,9 @@ export function showPopupSelection(
   popupPinned = false
   popupFocusLock = false
   popupAnchor = anchor
+  // 新选区开始一段全新会话：清掉用户对上一窗口的拖动位置，
+  // 让本次定位完全由 anchor + setBounds 决定。
+  userMovedBounds = null
 
   if (autoHideTimer) {
     clearTimeout(autoHideTimer)
@@ -364,12 +418,16 @@ export function showPopupSelection(
     reason,
     createdAt: Date.now(),
   }
+  currentPopupSessionId = payload.id
 
   if (popupReady) {
     emitSelectionPayload(win, payload, !win.isVisible())
   } else {
     pendingSelectionPayload = payload
     pendingSelectionShouldShow = true
+    // 兜底：万一 renderer 一直没 ready（极端情况），也确保窗口最终显示。
+    // 60ms 是 React 首次挂载的安全上限，比之前的 140ms 体感快很多。
+    if (!win.isVisible()) presentPopupWindow(60)
   }
 
   if (settings.autoHide && !autoHideTimer) {
@@ -387,7 +445,11 @@ export function updatePopupSelection(
   showPopupSelection(text, anchor, reason)
 }
 
-export function hidePopupWindow() {
+export function hidePopupWindow(sessionId?: string) {
+  if (sessionId && sessionId !== currentPopupSessionId) {
+    // 收到过期 session 的隐藏请求（如二次划词时旧 session 的延迟 hide），直接忽略。
+    return
+  }
   if (popupCloseFallback) {
     clearTimeout(popupCloseFallback)
     popupCloseFallback = null
@@ -456,17 +518,32 @@ export function getPopupWindow() {
 export function resizePopupWindow(width: number, height: number) {
   if (popupWindow && !popupWindow.isDestroyed()) {
     const settings = getPopupSettings()
-    const anchor = popupAnchor || screen.getCursorScreenPoint()
-    // 宽度上限 720；高度上限放到 800（之前 640 太紧，长流式内容被截在内部滚动），
-    // 同时再兜底限制到屏幕工作区高度的 90%，避免超高内容把窗口顶出屏幕。
+    // 关键：保留窗口当前 x/y。resizePopupWindow 只在窗口已显示之后被调用
+    // （toolbar ↔ 展开态切换、ResizeObserver 校准、重新生成时 status 变化等），
+    // 用户可能已经把窗口拖到别处；如果再按 popupAnchor 重算位置，会把窗口拉回
+    // 原划词点 —— 表现为流式时抖动、点重新生成跳回原位。新选区的定位由
+    // showPopupSelection 直接 setBounds 负责，不走这条路径。
+    //
+    // 位置源优先级：userMovedBounds（move 事件实时记录）> getBounds()。
+    // 两者通常一致；userMovedBounds 是兜底，规避 getBounds 在动画 step 与
+    // 外部 setBounds 交错时偶发的过期返回。
+    const current = userMovedBounds || popupWindow.getBounds()
+    const display = screen.getDisplayNearestPoint({ x: current.x, y: current.y })
     const safeWidth = Math.max(120, Math.min(Math.ceil(width), 720))
-    const display = screen.getDisplayNearestPoint(anchor)
     const maxByScreen = Math.max(160, Math.floor(display.workArea.height * 0.9))
     const safeHeight = Math.max(40, Math.min(Math.ceil(height), maxByScreen))
-    const target = calculatePopupBounds(anchor, safeWidth, safeHeight, settings)
 
-    // 平滑过渡：当前 bounds 与目标 bounds 之间用 RAF 缓动，
-    // 让窗口大小变化看起来"缓慢增长"而不是瞬时跳变。
+    let x = current.x
+    let y = current.y
+    if (settings.avoidScreenEdge) {
+      const wa = display.workArea
+      x = Math.min(Math.max(x, wa.x + 12), wa.x + wa.width - safeWidth - 12)
+      y = Math.min(Math.max(y, wa.y + 12), wa.y + wa.height - safeHeight - 12)
+    }
+
+    const target = { x, y, width: safeWidth, height: safeHeight }
+    // 平滑过渡：当前 bounds 与目标 bounds 之间用缓动；小幅变化由 animateBounds 内
+    // 自行跳过动画直接 setBounds。
     animateBounds(popupWindow, target)
 
     if (popupShowFallback) {
@@ -493,8 +570,18 @@ function animateBounds(win: BrowserWindow, target: Electron.Rectangle) {
   // 没有变化则跳过
   if (Math.abs(dw) < 1 && Math.abs(dh) < 1 && Math.abs(dx) < 1 && Math.abs(dy) < 1) return
 
-  const duration = 220
   const radius = getPopupSettings().cornerRadius
+
+  // 小幅变化（如 ResizeObserver 校准工具栏真实宽度）直接 setBounds，不动画。
+  // 否则用户每次二次划词都会看到工具栏宽度缓缓长大 220ms，体验比硬切换还差。
+  // 阈值：宽度 < 120px、高度 < 80px、位置 < 80px 视为微调；超过则用缓动（toolbar ↔ 展开态切换）。
+  if (Math.abs(dw) < 120 && Math.abs(dh) < 80 && Math.abs(dx) < 80 && Math.abs(dy) < 80) {
+    win.setBounds(target, false)
+    applyPopupWindowShape(win, target.width, target.height, radius)
+    return
+  }
+
+  const duration = 220
   const t0 = Date.now()
   const easeOut = (t: number) => 1 - Math.pow(1 - t, 3)
 
