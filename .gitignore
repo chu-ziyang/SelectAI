@@ -1,0 +1,51 @@
+# 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# 构建产物
+dist-electron/
+dist-renderer/
+release/
+*.tsbuildinfo
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 测试相关
+coverage/
+.nyc_output/
+
+# 工具生成的临时文件
+.codex/
+.playwright-mcp/
+.cache/
+
+# 截图/录屏（大文件不进仓库）
+dark-mode-fixed.png
+result-window-redesign.png
+划词助手.png
+*.png
+!public/icon*.png
+
+# 系统文件
+$RECYCLE.BIN/
+desktop.ini

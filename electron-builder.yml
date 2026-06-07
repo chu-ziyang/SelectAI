@@ -1,0 +1,31 @@
+appId: com.texthelper.app
+productName: 划词助手
+icon: public/icon.png
+
+directories:
+  output: release
+
+files:
+  - dist-electron/**/*
+  - dist-renderer/**/*
+  - public/icon*.png
+
+win:
+  target: nsis
+  icon: public/icon.png
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  language: 2052
+  installerIcon: public/icon.png
+  uninstallerIcon: public/icon.png
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 划词助手
+
+extraResources:
+  - from: public/
+    to: public/
+    filter:
+      - icon*.png
