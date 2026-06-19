@@ -5,9 +5,10 @@
 
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createInterface as createReadlineInterface } from 'node:readline';
 
 import { parseCli } from './release-lib/args.mjs';
-import { resolveTargetVersion, assertTagFree } from './release-lib/version.mjs';
+import { resolveTargetVersion, assertTagFree, isValidSemver } from './release-lib/version.mjs';
 import {
   statusClean, currentBranch, lastTag, tagSha, getCommitsSince,
   add, commit, tag, push, deleteTagLocal, deleteTagRemote, softResetLastCommit,
@@ -160,7 +161,7 @@ async function main() {
       // 二次确认：是否打开编辑器
       const choice = await new Promise((resolve) => {
         process.stdout.write('? 输入 e 打开编辑器，回车继续，q 取消 [e/Y/q] ');
-        const rl = require('node:readline').createInterface({ input: process.stdin, output: process.stdout });
+        const rl = createReadlineInterface({ input: process.stdin, output: process.stdout });
         rl.question('', (a) => {
           rl.close();
           const v = (a || '').trim().toLowerCase();

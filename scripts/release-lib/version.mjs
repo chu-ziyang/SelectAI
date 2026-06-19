@@ -1,6 +1,8 @@
 // scripts/release-lib/version.mjs
 // semver 校验、bump、tag 冲突检测。零依赖。
 
+import { execSync } from 'node:child_process'
+
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/;
 
 export function isValidSemver(v) {
@@ -54,7 +56,6 @@ export function resolveTargetVersion(input, currentVersion) {
 // tag 冲突检测：本地 + 远端
 export function tagExistsLocally(tag) {
   try {
-    const { execSync } = require('node:child_process');
     const out = execSync(`git tag --list ${tag}`, { encoding: 'utf8' });
     return out.trim().length > 0;
   } catch {
@@ -63,7 +64,6 @@ export function tagExistsLocally(tag) {
 }
 
 export async function tagExistsRemotely(remote, tag) {
-  const { execSync } = require('node:child_process');
   try {
     const out = execSync(`git ls-remote --tags ${remote} refs/tags/${tag}`, { encoding: 'utf8' });
     return out.trim().length > 0;

@@ -2,6 +2,7 @@
 // 读 / 解析 / 生成 / 插入 CHANGELOG.md。
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { bucketize, renderBucketsOrdered, CATEGORY_ORDER } from './conventional.mjs';
 
 // 解析 CHANGELOG.md 的所有 ## [X.Y.Z] - DATE 段
@@ -99,7 +100,6 @@ export async function editFile(filePath) {
   // VS Code 用 -w 等待关闭
   const fullArgs = cmd.includes('code') ? [filePath, '--wait'] : [...args, filePath];
   return new Promise((resolve, reject) => {
-    const { spawnSync } = require('node:child_process');
     const res = spawnSync(cmd, fullArgs, { stdio: 'inherit' });
     if (res.status !== 0) return reject(new Error(`编辑器退出码 ${res.status}`));
     const content = readFileSync(filePath, 'utf8');
