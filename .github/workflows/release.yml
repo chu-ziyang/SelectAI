@@ -33,27 +33,21 @@ jobs:
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
 
-      - name: 构建并发布 (创建草稿 Release)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run package -- --publish always
-
-      # electron-builder --publish always 只创建草稿 Release。
-      # 这里把它转成正式 Release，并把 CHANGELOG 里对应版本的段填进 release notes。
-      - name: 发布 Release (草稿 -> 正式)
+      - name: 构建并发布 (创建正式 Release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          # 从 CHANGELOG.md 抽取 ## [VERSION] 段
+          # 从 CHANGELOG.md 抽取 ## [VERSION] 段作为 release notes
           NOTES=$(awk "/^## \\[$VERSION\\]/{flag=1; next} /^## \\[/{flag=0} flag" CHANGELOG.md)
           if [ -z "$NOTES" ]; then
             NOTES="Release ${TAG}。完整变更记录见 CHANGELOG.md。"
           fi
-          gh release edit "$TAG" --draft=false --notes "$NOTES"
-          echo "::notice::Release ${TAG} published with $(echo "$NOTES" | wc -l) lines of notes."
+          # 写到 GH_RELEASE_BODY 环境变量，electron-builder 会读取
+          export GH_RELEASE_BODY="$NOTES"
+          echo "release notes: $(printf '%s' "$NOTES" | wc -c) bytes"
+          npm run package -- --publish always
 
       - name: 上传构建产物 (作为 workflow artifact 备份)
         uses: actions/upload-artifact@v4
