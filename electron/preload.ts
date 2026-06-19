@@ -123,6 +123,19 @@ const electronAPI = {
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   },
+  // 应用信息
+  app: {
+    getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
+    checkUpdate: (): Promise<{
+      ok: boolean
+      currentVersion?: string
+      latestVersion?: string
+      htmlUrl?: string
+      publishedAt?: string
+      hasUpdate?: boolean
+      error?: string
+    }> => ipcRenderer.invoke('app:check-update'),
+  },
   // 平台
   platform: process.platform,
 }

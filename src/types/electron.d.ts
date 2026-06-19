@@ -64,6 +64,18 @@ export interface ElectronAPI {
   shell: {
     openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>
   }
+  app: {
+    getVersion: () => Promise<string>
+    checkUpdate: () => Promise<{
+      ok: boolean
+      currentVersion?: string
+      latestVersion?: string
+      htmlUrl?: string
+      publishedAt?: string
+      hasUpdate?: boolean
+      error?: string
+    }>
+  }
   platform: string
 }
 

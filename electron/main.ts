@@ -14,6 +14,7 @@ import {
   presentPopupWindow, createResultWindow, closeResultWindow, setResultPinned,
 } from './windows'
 import { validateProviderUrl, validateExternalUrl } from './lib/urlValidation'
+import { compareSemver } from './lib/semver'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -649,6 +650,43 @@ function setupIPC() {
     const check = validateExternalUrl(url)
     if (!check.ok) return { ok: false, error: check.error }
     return shell.openExternal(url).then(() => ({ ok: true })).catch((err: Error) => ({ ok: false, error: err.message }))
+  })
+
+  // ---- 应用信息 ----
+  // 返回 package.json 里的当前版本号（来自 electron.app.getVersion()，无需 IPC 参数）
+  ipcMain.handle('app:get-version', () => app.getVersion())
+
+  // 调 GitHub Releases API 检查最新版本，返回 { ok, currentVersion, latestVersion, htmlUrl, publishedAt }
+  // 公开 endpoint，无需 token；带 User-Agent；不解析 prerelease
+  ipcMain.handle('app:check-update', async () => {
+    const currentVersion = app.getVersion()
+    const url = 'https://api.github.com/repos/chu-ziyang/SelectAI/releases/latest'
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'SelectAI-AboutPage',
+        },
+      })
+      if (!res.ok) {
+        return { ok: false, error: `GitHub API 返回 HTTP ${res.status}` }
+      }
+      const data: any = await res.json()
+      const latestVersion = String(data.tag_name || '').replace(/^v/, '')
+      const htmlUrl = String(data.html_url || '')
+      const publishedAt = String(data.published_at || '')
+      return {
+        ok: true,
+        currentVersion,
+        latestVersion,
+        htmlUrl,
+        publishedAt,
+        // 简单的版本比较：latest > current 才有更新
+        hasUpdate: compareSemver(latestVersion, currentVersion) > 0,
+      }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   ipcMain.handle('popup:resize', (_e, width: number, height: number) => {
