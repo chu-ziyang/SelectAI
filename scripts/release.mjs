@@ -50,14 +50,28 @@ async function main() {
   const pkg = JSON.parse(readFileSync(PKG, 'utf8'));
   const current = pkg.version;
   let target;
-  if (cli.version) {
+  // release:finish 模式（--skip-push）允许目标版本等于当前版本（断点续跑）
+  if (cli.skipPush && cli.version) {
+    if (cli.version === current ||
+        ['patch', 'minor', 'major'].includes(cli.version) ||
+        !isValidSemver(cli.version)) {
+      // finish 模式：版本号应当已经是 commit 时的版本。校验一致性即可。
+      const expected = current;
+      if (cli.version !== expected && isValidSemver(cli.version) && cli.version !== expected) {
+        exit(1, `finish 模式：传入的版本 ${cli.version} 与 package.json 当前版本 ${expected} 不一致`);
+      }
+      target = expected;
+    } else {
+      target = resolveTargetVersion(cli.version, current);
+    }
+  } else if (cli.version) {
     target = resolveTargetVersion(cli.version, current);
   } else if (cli.dryRun) {
     exit(1, '干跑模式也要传版本号：npm run release:dry 1.3.0');
   } else {
     exit(1, '缺少版本号参数');
   }
-  if (target === current) exit(1, `目标版本 ${target} 与当前相同`);
+  if (!cli.skipPush && target === current) exit(1, `目标版本 ${target} 与当前相同`);
 
   const tagName = `v${target}`;
   ok(`当前版本：${current}`);
@@ -187,10 +201,14 @@ async function main() {
   writeFileSync(PKG, newPkgText, 'utf8');
   ok('package.json updated');
 
-  const clText = readFileSync(CHANGELOG, 'utf8');
-  const newClText = insertEntry(clText, entryText.trimEnd());
-  writeFileSync(CHANGELOG, newClText, 'utf8');
-  ok('CHANGELOG.md updated');
+  if (!cli.skipPush) {
+    const clText = readFileSync(CHANGELOG, 'utf8');
+    const newClText = insertEntry(clText, entryText.trimEnd());
+    writeFileSync(CHANGELOG, newClText, 'utf8');
+    ok('CHANGELOG.md updated');
+  } else {
+    sub('已跳过 CHANGELOG 写入（finish 模式不应修改 CHANGELOG）');
+  }
 
   // 清理 preview 文件
   if (existsSync(PREVIEW)) {
