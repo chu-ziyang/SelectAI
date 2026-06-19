@@ -7,25 +7,41 @@
 
 ## [1.2.0] - 2026-06-19
 
-### 新增
+🧪 **测试与质量**：从"没有自动测试"到"每次提交自动校验"。本版本把项目改造成了"代码改动有据可查、每次提交自动跑测试"的状态，未来再出问题能快速定位，不会再出现"上线后才被发现"的隐患。
 
-- **测试基础设施**：接入 Vitest，新增 4 个测试文件共 40 个单元测试，覆盖 `electron/lib/urlValidation`、`electron/lib/popupGeometry`、`electron/lib/roundedShape`、`src/shared/toolbarGeometry`。
-- **CI 工作流**：新增 `.github/workflows/ci.yml`，在 push / pull_request 时自动跑 `npm run typecheck` 与 `npm test`。
-- **代码质量工具链**：引入 ESLint（`.eslintrc.json`）与 Prettier（`.prettierrc` / `.prettierignore`），统一 TypeScript / TSX 风格。
-- **CLAUDE.md**：项目全景说明文档（架构、模块、关键问题与解决方案、设计决策），便于接手。
+### 🧪 自动化测试
 
-### 重构
+- 接入 **Vitest** 测试框架，新增 40 个单元测试，覆盖 URL 校验、弹窗几何、窗口圆角、工具栏布局等核心算法。
+- 新增 `.github/workflows/ci.yml`，每次 push / PR 自动跑 `npm run typecheck + lint + test + build`，有问题立刻知道。
 
-- 抽出 `validateProviderUrl` / `validateExternalUrl` 至 `electron/lib/urlValidation.ts`，从 `electron/main.ts` 移除内联实现并加上单元测试。
-- 抽出弹窗几何计算至 `electron/lib/popupGeometry.ts`，从 `electron/windows.ts` 移除重复实现。
-- 抽出 OS 圆角形状计算至 `electron/lib/roundedShape.ts`，供 `windows.ts` 复用。
-- 抽出工具栏几何估算至 `src/shared/toolbarGeometry.ts`，供 `src/popup/*` 复用。
-- 删除 `src/popup/popupPosition.ts` 与 `src/services/providers.ts`，对应能力合并到 lib / shared 模块。
+### 🛠️ 工程化改进
 
-### 安全加固
+- 引入 **ESLint + Prettier**，统一 TypeScript / TSX 代码风格，编辑器自动检查。
+- 把内联在 `main.ts` / `windows.ts` 里的纯函数（URL 校验、几何计算、圆角形状）抽成独立模块，方便复用与测试。
+- 新增 **CLAUDE.md** 项目全景文档，架构、模块、踩过的坑、关键决策一目了然，方便新接手的人快速上手。
 
-- `store:set` IPC 新增写入白名单（`WRITABLE_STORE_KEYS`），仅允许 `settings` / `popupSettings` / `providers` / `actions` / `history` / `shortcut` / `showWindowShortcut` / `_paused` 这些已知 key，防止 renderer 污染 schema 外的存储键。
-- `store:get` 增加 key 长度校验，避免异常超长 key 触发底层异常。
+### 🔒 进一步安全加固（接 v1.1.0 的 5 项）
+
+- `store:set` 接口新增写入白名单，渲染进程只能写已知 key（设置、动作、历史等），不能再写入任意存储键。
+- `store:get` 增加 key 长度校验，防止异常输入触发底层错误。
+
+### 🚀 一键发布脚本（内部改进）
+
+- 新增 `npm run release` 命令，自动完成"改版本号 → 写 CHANGELOG → commit + tag + push → 等 GitHub Actions 打包 → 把草稿 Release 转正式发布"。维护者以后只需要一句命令就能发布新版本，不再需要手动登录 GitHub 点 Publish。
+
+### 📥 下载
+
+Windows：下方 `划词助手 Setup 1.2.0.exe`（NSIS 安装包，约 80 MB）。
+
+首次安装可能被 SmartScreen 提示"未知发布者"，点"更多信息"→"仍要运行"即可（应用未付费代码签名证书，下个版本会补上）。
+
+### ⬆️ 升级建议
+
+从 **1.0.x / 1.1.x** 直接覆盖安装即可：设置、历史、模型配置都不会丢。如果之前安装过 1.0.0 之前的早期版本，建议先卸载再装。
+
+### 🙏 致谢
+
+这一版主要是"内功修炼"，没有新功能给到终端用户，但保证了**未来的开发更稳、bug 更少**。感谢持续反馈问题的用户 —— 你们的反馈让这个项目越来越扎实。
 
 ## [1.0.1] - 2026-06-07
 
