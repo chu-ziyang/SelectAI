@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Github, RefreshCw, MessageCircle, History, ExternalLink, Sparkles, Heart, FolderOpen } from 'lucide-react'
+import { Github, RefreshCw, MessageCircle, History, ExternalLink, Sparkles, Heart } from 'lucide-react'
 import { useI18n } from '@/i18n/useI18n'
 
 const REPO_URL = 'https://github.com/chu-ziyang/SelectAI'
@@ -164,17 +164,6 @@ export default function AboutSettings() {
           subtitle={<span className="font-mono text-[var(--text-tertiary)]">chu-ziyang/SelectAI</span>}
           action={<ExternalButton url={REPO_URL} label="GitHub" />}
         />
-      </div>
-
-      {/* 数据存储 */}
-      <div className="settings-section mt-4">
-        <div className="setting-row block px-5 py-3">
-          <div className="flex items-center gap-2.5">
-            <FolderOpen size={14} className="text-[var(--text-secondary)]" />
-            <p className="text-sm font-medium text-[var(--text-primary)]">{t('about.dataPath')}</p>
-          </div>
-          <p className="text-xs text-[var(--text-secondary)] mt-1 font-mono">%APPDATA%\text-helper\</p>
-        </div>
       </div>
 
       {/* 开发者 */}
