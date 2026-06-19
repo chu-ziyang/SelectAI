@@ -33,6 +33,30 @@ jobs:
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
 
+      # electron-builder 不会把已存在的 draft release 改成 published release。
+      # 重跑前如果 draft 还在，先删掉，让 electron-builder 重新创建一个带 notes 的正式 release。
+      - name: 清理上次遗留的 draft Release (如果存在)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          REL_JSON=$(curl -sS \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${TAG}")
+          REL_ID=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.id||''))}catch{process.stdout.write('')}}")
+          REL_DRAFT=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.draft))}catch{process.stdout.write('')}}")
+          if [ -n "$REL_ID" ] && [ "$REL_DRAFT" = "true" ]; then
+            echo "Deleting existing draft release id=$REL_ID for ${TAG}"
+            curl -sS -X DELETE \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}"
+            echo "deleted."
+          else
+            echo "No draft release for ${TAG} (id='${REL_ID}', draft='${REL_DRAFT}'); skipping cleanup."
+          fi
+
       - name: 构建并发布 (创建正式 Release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
