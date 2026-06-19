@@ -38,6 +38,7 @@ coverage/
 .codex/
 .playwright-mcp/
 .cache/
+.release-notes-draft.md
 
 # 截图/录屏（大文件不进仓库）
 dark-mode-fixed.png
