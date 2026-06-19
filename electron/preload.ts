@@ -25,17 +25,30 @@ const electronAPI = {
   },
   // AI 请求
   ai: {
-    chat: (params: { providerId: string; modelId: string; messages: Array<{ role: string; content: string }>; temperature?: number; maxTokens?: number }) =>
+    chat: (params: { requestId?: string; providerId: string; modelId: string; messages: Array<{ role: string; content: string }>; temperature?: number; maxTokens?: number }) =>
       ipcRenderer.invoke('ai:chat', params),
-    cancel: () => ipcRenderer.invoke('ai:cancel'),
-    onStreamChunk: (callback: (data: { content: string; fullContent: string }) => void) => {
-      ipcRenderer.on('ai:stream-chunk', (_e, data) => callback(data))
+    cancel: (requestId?: string) => ipcRenderer.invoke('ai:cancel', requestId),
+    /**
+     * 订阅流式 chunk。返回取消订阅函数。
+     * 如果传入 expectedRequestId，只接收该 requestId 的 chunk（推荐，避免并发串流）。
+     * 不传则接收所有 chunk（兼容老调用方）。
+     */
+    onStreamChunk: (callback: (data: { requestId: string; content: string; fullContent: string }) => void, expectedRequestId?: string) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { requestId: string; content: string; fullContent: string }) => {
+        if (expectedRequestId && data.requestId !== expectedRequestId) return
+        callback(data)
+      }
+      ipcRenderer.on('ai:stream-chunk', listener)
+      return () => ipcRenderer.removeListener('ai:stream-chunk', listener)
     },
-    offStreamChunk: () => ipcRenderer.removeAllListeners('ai:stream-chunk'),
-    onStreamUsage: (callback: (data: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void) => {
-      ipcRenderer.on('ai:stream-usage', (_e, data) => callback(data))
+    onStreamUsage: (callback: (data: { requestId: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void, expectedRequestId?: string) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { requestId: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => {
+        if (expectedRequestId && data.requestId !== expectedRequestId) return
+        callback(data)
+      }
+      ipcRenderer.on('ai:stream-usage', listener)
+      return () => ipcRenderer.removeListener('ai:stream-usage', listener)
     },
-    offStreamUsage: () => ipcRenderer.removeAllListeners('ai:stream-usage'),
   },
   // 选中文字
   getSelectedText: () => ipcRenderer.invoke('get-selected-text'),
@@ -78,6 +91,18 @@ const electronAPI = {
       ipcRenderer.invoke('result:open', data),
     setPinned: (pinned: boolean) => ipcRenderer.invoke('result:set-pinned', pinned),
     close: () => ipcRenderer.invoke('result:close'),
+    /**
+     * 接收 result 窗口参数。返回一次性回调，触发后自动解绑。
+     * （新窗口推 params 用 webContents.send，比 URL query 安全）
+     */
+    onParams: (callback: (data: { actionId: string; name: string; icon: string; text: string; providerId: string; modelId: string; prompt: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { actionId: string; name: string; icon: string; text: string; providerId: string; modelId: string; prompt: string }) => {
+        ipcRenderer.removeListener('result:params', listener)
+        callback(data)
+      }
+      ipcRenderer.on('result:params', listener)
+      return () => ipcRenderer.removeListener('result:params', listener)
+    },
   },
   // 事件监听
   on: (channel: string, callback: (...args: unknown[]) => void) => {

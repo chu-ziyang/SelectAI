@@ -1,8 +1,8 @@
 export interface ElectronAPI {
   store: {
     get: (key: string) => Promise<unknown>
-    set: (key: string, value: unknown) => Promise<boolean>
-    delete: (key: string) => Promise<boolean>
+    set: (key: string, value: unknown) => Promise<{ ok: boolean; error?: string }>
+    delete: (key: string) => Promise<{ ok: boolean; error?: string }>
   }
   provider: {
     list: () => Promise<unknown[]>
@@ -19,15 +19,17 @@ export interface ElectronAPI {
   }
   ai: {
     chat: (params: {
-      providerId: string; modelId: string
+      requestId?: string; providerId: string; modelId: string
       messages: Array<{ role: string; content: string }>
       temperature?: number; maxTokens?: number
-    }) => Promise<{ ok: boolean; content?: string; error?: string; detail?: string }>
-    cancel: () => Promise<{ ok: boolean; error?: string }>
-    onStreamChunk: (callback: (data: { content: string; fullContent: string }) => void) => void
-    offStreamChunk: () => void
-    onStreamUsage: (callback: (data: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void) => void
-    offStreamUsage: () => void
+    }) => Promise<{ ok: boolean; requestId?: string; content?: string; error?: string; detail?: string }>
+    cancel: (requestId?: string) => Promise<{ ok: boolean; error?: string }>
+    /**
+     * 订阅流式 chunk，返回取消订阅函数。
+     * 传 expectedRequestId 则只接收该 requestId 的事件（推荐，避免并发串流）。
+     */
+    onStreamChunk: (callback: (data: { requestId: string; content: string; fullContent: string }) => void, expectedRequestId?: string) => () => void
+    onStreamUsage: (callback: (data: { requestId: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void, expectedRequestId?: string) => () => void
   }
   getSelectedText: () => Promise<string>
   popup: {
@@ -49,6 +51,7 @@ export interface ElectronAPI {
     open: (data: { actionId: string; name: string; icon: string; text: string; providerId: string; modelId: string; prompt: string }) => Promise<{ ok: boolean }>
     setPinned: (pinned: boolean) => Promise<{ ok: boolean }>
     close: () => Promise<{ ok: boolean }>
+    onParams: (callback: (data: { actionId: string; name: string; icon: string; text: string; providerId: string; modelId: string; prompt: string }) => void) => () => void
   }
   on: (channel: string, callback: (...args: unknown[]) => void) => void
   removeAllListeners: (channel: string) => void

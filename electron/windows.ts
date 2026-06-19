@@ -1,6 +1,8 @@
 import { app, BrowserWindow, screen } from 'electron'
 import path from 'path'
 import { createStore } from './store'
+import { getRoundedRectShape } from './lib/roundedShape'
+import { calculatePopupBounds as calculatePopupBoundsPure } from './lib/popupGeometry'
 
 let popupWindow: BrowserWindow | null = null
 let resultWindow: BrowserWindow | null = null
@@ -75,105 +77,29 @@ function getPopupSettings(): Required<StoredPopupSettings> {
   }
 }
 
+/**
+ * 弹窗窗口坐标计算（屏幕相关薄封装）。
+ * 纯几何逻辑在 electron/lib/popupGeometry.ts，这里只负责从 Electron screen 取工作区。
+ */
 function calculatePopupBounds(
   cursorPoint: Electron.Point,
   popupW: number,
   popupH: number,
   settings: Required<StoredPopupSettings>,
 ) {
-  const display = screen.getDisplayNearestPoint(cursorPoint)
-  const workArea = display.workArea
-  const gapX = 8 + settings.offsetX
-  const gapY = 8 + settings.offsetY
-
-  let x = cursorPoint.x + gapX
-  let y = cursorPoint.y + gapY
-
-  switch (settings.placement) {
-    case 'top-left':
-      x = cursorPoint.x - popupW - gapX
-      y = cursorPoint.y - popupH - gapY
-      break
-    case 'top':
-      x = cursorPoint.x - popupW / 2 + settings.offsetX
-      y = cursorPoint.y - popupH - gapY
-      break
-    case 'top-right':
-      x = cursorPoint.x + gapX
-      y = cursorPoint.y - popupH - gapY
-      break
-    case 'left':
-      x = cursorPoint.x - popupW - gapX
-      y = cursorPoint.y - popupH / 2 + settings.offsetY
-      break
-    case 'center':
-      x = cursorPoint.x - popupW / 2 + settings.offsetX
-      y = cursorPoint.y - popupH / 2 + settings.offsetY
-      break
-    case 'right':
-      x = cursorPoint.x + gapX
-      y = cursorPoint.y - popupH / 2 + settings.offsetY
-      break
-    case 'bottom-left':
-      x = cursorPoint.x - popupW - gapX
-      y = cursorPoint.y + gapY
-      break
-    case 'bottom':
-      x = cursorPoint.x - popupW / 2 + settings.offsetX
-      y = cursorPoint.y + gapY
-      break
-    case 'bottom-right':
-    default:
-      x = cursorPoint.x + gapX
-      y = cursorPoint.y + gapY
-      break
-  }
-
-  if (settings.avoidScreenEdge) {
-    x = Math.min(Math.max(x, workArea.x + 12), workArea.x + workArea.width - popupW - 12)
-    y = Math.min(Math.max(y, workArea.y + 12), workArea.y + workArea.height - popupH - 12)
-  }
-
-  return { x: Math.round(x), y: Math.round(y), width: popupW, height: popupH }
-}
-
-function getRoundedRectShape(width: number, height: number, radius: number): Electron.Rectangle[] {
-  const w = Math.max(1, Math.round(width))
-  const h = Math.max(1, Math.round(height))
-  const r = Math.max(0, Math.min(Math.round(radius), Math.floor(w / 2), Math.floor(h / 2)))
-  if (r <= 0) return [{ x: 0, y: 0, width: w, height: h }]
-
-  const rects: Electron.Rectangle[] = []
-  let pending: Electron.Rectangle | null = null
-  const pushRow = (y: number, x: number, rowWidth: number) => {
-    if (rowWidth <= 0) return
-    if (pending && pending.x === x && pending.width === rowWidth && pending.y + pending.height === y) {
-      pending.height += 1
-      return
-    }
-    if (pending) rects.push(pending)
-    pending = { x, y, width: rowWidth, height: 1 }
-  }
-
-  for (let y = 0; y < h; y += 1) {
-    let inset = 0
-    if (y < r) {
-      const dy = r - y - 0.5
-      inset = Math.max(0, Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy))))
-    } else if (y >= h - r) {
-      const dy = y - (h - r) + 0.5
-      inset = Math.max(0, Math.ceil(r - Math.sqrt(Math.max(0, r * r - dy * dy))))
-    }
-    pushRow(y, inset, w - inset * 2)
-  }
-  if (pending) rects.push(pending)
-  return rects
+  const workArea = screen.getDisplayNearestPoint(cursorPoint).workArea
+  return calculatePopupBoundsPure(cursorPoint, popupW, popupH, workArea, {
+    placement: settings.placement as any,
+    offsetX: settings.offsetX,
+    offsetY: settings.offsetY,
+    avoidScreenEdge: settings.avoidScreenEdge,
+  })
 }
 
 function applyPopupWindowShape(win: BrowserWindow, width: number, height: number, radius = getPopupSettings().cornerRadius) {
   if (win.isDestroyed()) return
   try {
-    win.setShape(getRoundedRectShape(width, height, radius))
+    win.setShape(getRoundedRectShape(width, height, radius) as Electron.Rectangle[])
   } catch {
     // setShape is platform-dependent; CSS border-radius remains the visual fallback.
   }
@@ -655,24 +581,25 @@ export function createResultWindow(actionId: string, actionName: string, actionI
   }
   win.setBounds({ x, y, width: w, height: h }, false)
 
-  const params = new URLSearchParams({
-    actionId,
-    name: actionName,
-    icon: actionIcon,
-    text: selectedText,
-    providerId,
-    modelId,
-    prompt: systemPrompt,
-  })
-
+  // 不再把 text/prompt 拼进 URL（长文本+特殊字符会撑爆 URL，且可能被会话历史记录）。
+  // 改用 webContents.send 在 did-finish-load 后传参；renderer 用一次性回调接收。
   if (!app.isPackaged) {
-    win.loadURL(`http://localhost:5174/#/result?${params.toString()}`)
+    win.loadURL('http://localhost:5174/#/result')
   } else {
     win.loadFile(
       path.join(__dirname, '../dist-renderer/index.html'),
-      { hash: `/result?${params.toString()}` },
+      { hash: '/result' },
     )
   }
+
+  // 等待页面渲染完再推参数；renderer 必须先注册 result:on-params 监听
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return
+    win.webContents.send('result:params', {
+      actionId, name: actionName, icon: actionIcon, text: selectedText,
+      providerId, modelId, prompt: systemPrompt,
+    })
+  })
 
   win.once('ready-to-show', () => {
     win.show()

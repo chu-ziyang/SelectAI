@@ -24,24 +24,14 @@ interface ConversationTurn {
   content: string
 }
 
-function readParams(): ResultParams {
-  const raw = window.location.hash
-  const qs = raw.includes('?') ? raw.split('?')[1] : ''
-  const sp = new URLSearchParams(qs)
-  return {
-    actionId: sp.get('actionId') || '',
-    name: sp.get('name') || '',
-    icon: sp.get('icon') || '',
-    text: sp.get('text') || '',
-    providerId: sp.get('providerId') || '',
-    modelId: sp.get('modelId') || '',
-    prompt: sp.get('prompt') || '',
-  }
+const EMPTY_PARAMS: ResultParams = {
+  actionId: '', name: '', icon: '', text: '',
+  providerId: '', modelId: '', prompt: '',
 }
 
 export default function ResultApp() {
   const chatStore = useChatStore()
-  const paramsRef = useRef<ResultParams>(readParams())
+  const paramsRef = useRef<ResultParams>(EMPTY_PARAMS)
   const startedRef = useRef(false)
   const lastCommittedRef = useRef('')
   const historySavedRef = useRef(false)
@@ -49,31 +39,40 @@ export default function ResultApp() {
   const contentRef = useRef<HTMLDivElement>(null)
   const params = paramsRef.current
 
-  const [sourceText, setSourceText] = useState(params.text)
+  const [sourceText, setSourceText] = useState('')
   const [sourceOpen, setSourceOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [isPinned, setIsPinned] = useState(false)
   const [followUp, setFollowUp] = useState('')
   const [turns, setTurns] = useState<ConversationTurn[]>([])
 
+  // 接收主进程通过 webContents.send 推送的 params（一次性）
+  useEffect(() => {
+    const off = window.electronAPI?.result.onParams((data) => {
+      paramsRef.current = data
+      setSourceText(data.text)
+      if (!startedRef.current) {
+        startedRef.current = true
+        runInitial()
+      }
+    })
+    return off
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const runInitial = () => {
+    const p = paramsRef.current
     startedAtRef.current = performance.now()
     lastCommittedRef.current = ''
     setTurns([])
     chatStore.clearResult()
     void chatStore.sendMessage({
-      providerId: params.providerId,
-      modelId: params.modelId,
-      systemPrompt: params.prompt.replace(/\{\{selected_text\}\}/g, sourceText),
-      userText: sourceText,
+      providerId: p.providerId,
+      modelId: p.modelId,
+      systemPrompt: p.prompt.replace(/\{\{selected_text\}\}/g, sourceText || p.text),
+      userText: sourceText || p.text,
     })
   }
-
-  useEffect(() => {
-    if (startedRef.current) return
-    startedRef.current = true
-    runInitial()
-  }, [])
 
   useEffect(() => {
     if (chatStore.isStreaming || !chatStore.result || chatStore.result === lastCommittedRef.current) return
@@ -86,11 +85,13 @@ export default function ResultApp() {
       historySavedRef.current = true
       void saveHistory(chatStore.result)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatStore.isStreaming, chatStore.result])
 
   const saveHistory = async (resultText: string) => {
     const api = window.electronAPI
     if (!api) return
+    const p = paramsRef.current
     const settings = await api.store.get('settings') as { saveHistory?: boolean; historyRetentionDays?: number } | undefined
     if (settings?.saveHistory === false) return
 
@@ -99,11 +100,11 @@ export default function ResultApp() {
     const existing = ((await api.store.get('history')) || []) as HistoryRecord[]
     const record: HistoryRecord = {
       id: `h_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      selectedText: sourceText,
-      actionId: params.actionId,
-      actionName: params.name,
-      providerId: params.providerId,
-      modelId: params.modelId,
+      selectedText: sourceText || p.text,
+      actionId: p.actionId,
+      actionName: p.name,
+      providerId: p.providerId,
+      modelId: p.modelId,
       resultText,
       status: 'success',
       latencyMs: Math.round(performance.now() - startedAtRef.current),

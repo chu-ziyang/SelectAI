@@ -5,6 +5,28 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范。
 
+## [1.2.0] - 2026-06-19
+
+### 新增
+
+- **测试基础设施**：接入 Vitest，新增 4 个测试文件共 40 个单元测试，覆盖 `electron/lib/urlValidation`、`electron/lib/popupGeometry`、`electron/lib/roundedShape`、`src/shared/toolbarGeometry`。
+- **CI 工作流**：新增 `.github/workflows/ci.yml`，在 push / pull_request 时自动跑 `npm run typecheck` 与 `npm test`。
+- **代码质量工具链**：引入 ESLint（`.eslintrc.json`）与 Prettier（`.prettierrc` / `.prettierignore`），统一 TypeScript / TSX 风格。
+- **CLAUDE.md**：项目全景说明文档（架构、模块、关键问题与解决方案、设计决策），便于接手。
+
+### 重构
+
+- 抽出 `validateProviderUrl` / `validateExternalUrl` 至 `electron/lib/urlValidation.ts`，从 `electron/main.ts` 移除内联实现并加上单元测试。
+- 抽出弹窗几何计算至 `electron/lib/popupGeometry.ts`，从 `electron/windows.ts` 移除重复实现。
+- 抽出 OS 圆角形状计算至 `electron/lib/roundedShape.ts`，供 `windows.ts` 复用。
+- 抽出工具栏几何估算至 `src/shared/toolbarGeometry.ts`，供 `src/popup/*` 复用。
+- 删除 `src/popup/popupPosition.ts` 与 `src/services/providers.ts`，对应能力合并到 lib / shared 模块。
+
+### 安全加固
+
+- `store:set` IPC 新增写入白名单（`WRITABLE_STORE_KEYS`），仅允许 `settings` / `popupSettings` / `providers` / `actions` / `history` / `shortcut` / `showWindowShortcut` / `_paused` 这些已知 key，防止 renderer 污染 schema 外的存储键。
+- `store:get` 增加 key 长度校验，避免异常超长 key 触发底层异常。
+
 ## [1.0.1] - 2026-06-07
 
 ### 修复

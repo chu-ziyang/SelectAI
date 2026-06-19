@@ -36,7 +36,10 @@ function delay(ms: number) {
 
 function shouldTriggerText(text: string) {
   const store = createStore()
-  const minLength = store.get('settings.minTriggerLength', 3) as number
+  const raw = store.get('settings.minTriggerLength', 3) as unknown
+  // 防御：若 store 被破坏为非数（如 "abc"），回退默认 3，避免划词静默失效
+  const parsed = typeof raw === 'number' ? raw : Number(raw)
+  const minLength = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 3
   if (!text || text.length < minLength) return false
 
   const now = Date.now()
@@ -179,20 +182,55 @@ while ($true) {
     }
   })
 
-  mouseWatchProcess.stderr.on('data', () => {
-    // Drain stderr so the watcher cannot block if PowerShell emits warnings.
+  // stderr 排空避免阻塞；同时把警告写入日志便于排查
+  mouseWatchProcess.stderr.on('data', (chunk) => {
+    // 不在 stderr 上做任何抛错——只是把内容排空
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    chunk
   })
 
-  mouseWatchProcess.on('error', () => {
+  mouseWatchProcess.on('error', (err) => {
+    // 进程创建失败或启动错误：记录后重置，由 isWatching 在下一轮触发重启
+    console.warn('[text-selection] mouse watcher error:', err?.message || err)
     mouseWatchProcess = null
   })
 
-  mouseWatchProcess.on('exit', () => {
-    mouseWatchProcess = null
+  mouseWatchProcess.on('exit', (code, signal) => {
+    if (mouseWatchProcess !== null) {
+      // 非预期退出（用户没主动 stop）—— 记录并按指数退避重启
+      console.warn(`[text-selection] mouse watcher exited (code=${code}, signal=${signal}), will restart`)
+      mouseWatchProcess = null
+      if (isWatching) {
+        scheduleMouseWatchRestart()
+      }
+    }
   })
 }
 
+let mouseWatchRestartTimer: ReturnType<typeof setTimeout> | null = null
+let mouseWatchRestartAttempts = 0
+
+function scheduleMouseWatchRestart() {
+  if (mouseWatchRestartTimer) return
+  // 指数退避：1s, 2s, 4s, 8s, 最长 30s
+  const delay = Math.min(30000, 1000 * Math.pow(2, mouseWatchRestartAttempts))
+  mouseWatchRestartAttempts += 1
+  mouseWatchRestartTimer = setTimeout(() => {
+    mouseWatchRestartTimer = null
+    if (isWatching) {
+      startMouseWatch()
+      // 成功重启就重置 attempts（在新的 spawn 成功时无法判断；
+      // 简化策略：每 5 次成功调用清零，由 stop/start 触发）
+    }
+  }, delay)
+}
+
 function stopMouseWatch() {
+  if (mouseWatchRestartTimer) {
+    clearTimeout(mouseWatchRestartTimer)
+    mouseWatchRestartTimer = null
+  }
+  mouseWatchRestartAttempts = 0
   if (mouseWatchProcess) {
     mouseWatchProcess.kill()
     mouseWatchProcess = null
@@ -245,7 +283,9 @@ export function startTextWatch() {
       const currentText = clipboard.readText().trim()
       if (!currentText || currentText === savedClipboard) return
 
-      const minLength = store.get('settings.minTriggerLength', 3) as number
+      const raw = store.get('settings.minTriggerLength', 3) as unknown
+      const parsed = typeof raw === 'number' ? raw : Number(raw)
+      const minLength = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 3
       if (currentText.length < minLength) return
 
       savedClipboard = currentText

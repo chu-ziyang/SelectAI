@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { streamChat, type StreamChunk } from '@/services/api'
+import { streamChat, type StreamChunk, type StreamUsage } from '@/services/api'
 
 export interface ChatState {
   // 状态
@@ -56,14 +56,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         latencyMs: null,
       })
 
-      // 订阅 token 用量事件（最后一个 chunk 会触发）
-      const api = (window as any).electronAPI
-      let usageData: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null
-      api?.ai?.onStreamUsage?.((data: { promptTokens?: number; completionTokens?: number; totalTokens?: number }) => {
-        usageData = data
-        set({ tokenUsage: data })
-      })
-
+      // usage 通过 streamChat 的第三个参数传入（按 requestId 自动过滤/解绑）
       const { promise, cancel } = streamChat(
         {
           providerId: params.providerId,
@@ -78,17 +71,18 @@ export const useChatStore = create<ChatState>((set, get) => {
         (chunk: StreamChunk) => {
           set({ result: chunk.fullContent })
         },
+        (usage: StreamUsage) => {
+          set({ tokenUsage: usage })
+        },
       )
 
       cancelFn = cancel
 
       const result = await promise
-      api?.ai?.offStreamUsage?.()
-      const finalUsage = usageData || result.tokenUsage || null
       set({
         isStreaming: false,
         latencyMs: result.latencyMs ?? null,
-        tokenUsage: finalUsage,
+        tokenUsage: get().tokenUsage || result.tokenUsage || null,
       })
 
       if (!result.ok) {
@@ -99,7 +93,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       return {
         ok: true,
         content: get().result || result.content || '',
-        tokenUsage: finalUsage,
+        tokenUsage: get().tokenUsage,
         latencyMs: result.latencyMs,
       }
     },

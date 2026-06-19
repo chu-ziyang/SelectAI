@@ -13,6 +13,7 @@ import {
   closePopupWindow, setPopupPinned, setPopupFocusLock, resizePopupWindow, markPopupRendererReady,
   presentPopupWindow, createResultWindow, closeResultWindow, setResultPinned,
 } from './windows'
+import { validateProviderUrl, validateExternalUrl } from './lib/urlValidation'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -24,44 +25,6 @@ const isDev = !app.isPackaged
 function sanitizeProvider(provider: any) {
   const { apiKeyEncrypted, ...safeProvider } = provider
   return safeProvider
-}
-
-/**
- * 校验 provider baseUrl，防止把 API Key 发到错误目标：
- * - 必须 http/https（拒 file://、javascript: 等）
- * - 不允许 URL 内含用户名/密码（避免 https://attacker:x@victim.com 钓鱼）
- * - http 仅允许 localhost / 127.x / ::1（保留本地 LLM 如 Ollama 的合法用例），
- *   公网必须 https（否则 Bearer Key 会以明文走中间路径）
- * - 拒绝云元数据地址（AWS/GCP IMDS），无论协议
- */
-function validateProviderUrl(input: string): { ok: true } | { ok: false; error: string } {
-  let parsed: URL
-  try {
-    parsed = new URL(input.trim())
-  } catch {
-    return { ok: false, error: 'API 地址格式无效，请填写完整 URL（如 https://api.example.com/v1）' }
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    return { ok: false, error: 'API 地址只支持 https:// 或 http:// 协议' }
-  }
-  if (parsed.username || parsed.password) {
-    return { ok: false, error: 'API 地址不允许包含用户名/密码' }
-  }
-  const host = parsed.hostname.toLowerCase()
-  const isLocal =
-    host === 'localhost' ||
-    host === '0.0.0.0' ||
-    /^127\./.test(host) ||
-    host === '[::1]' ||
-    host === '::1'
-  if (parsed.protocol === 'http:' && !isLocal) {
-    return { ok: false, error: 'http:// 仅支持本机地址；公网请改用 https://，否则 API Key 会以明文传输' }
-  }
-  // 云元数据：AWS IMDS / GCP metadata / Alibaba metadata 等，全部拦
-  if (/^169\.254\./.test(host) || host === 'metadata.google.internal' || host === 'metadata' || host === '100.100.100.200') {
-    return { ok: false, error: '不允许访问云元数据服务地址' }
-  }
-  return { ok: true }
 }
 
 function applyAppSettings(settings: any) {
@@ -236,8 +199,21 @@ function setupIPC() {
   const store = createStore()
 
   // ---- 存储 ----
-  ipcMain.handle('store:get', (_e, key: string) => store.get(key))
+  // store:set 白名单：renderer 是半可信的，限制只能写已知 key
+  // （防止污染 electron-store schema 之外的 key 引发未定义行为）。
+  const WRITABLE_STORE_KEYS = new Set([
+    'settings', 'popupSettings', 'providers', 'actions',
+    'history', 'shortcut', 'showWindowShortcut', '_paused',
+  ])
+
+  ipcMain.handle('store:get', (_e, key: string) => {
+    if (typeof key !== 'string' || key.length === 0 || key.length > 100) return undefined
+    return store.get(key)
+  })
   ipcMain.handle('store:set', (_e, key: string, value: unknown) => {
+    if (!WRITABLE_STORE_KEYS.has(key)) {
+      return { ok: false, error: `不允许写入存储键 ${key}` }
+    }
     store.set(key, value)
     if (key === 'settings') {
       applyAppSettings(value)
@@ -253,11 +229,14 @@ function setupIPC() {
       if (value) stopTextWatch()
       else startTextWatch()
     }
-    return true
+    return { ok: true }
   })
   ipcMain.handle('store:delete', (_e, key: string) => {
+    if (!WRITABLE_STORE_KEYS.has(key)) {
+      return { ok: false, error: `不允许删除存储键 ${key}` }
+    }
     store.delete(key)
-    return true
+    return { ok: true }
   })
 
   // ---- 厂商管理 ----
@@ -265,9 +244,14 @@ function setupIPC() {
 
   ipcMain.handle('provider:add', (_e, provider) => {
     const providers = (store.get('providers', []) as any[])
+    // 入参基本守卫：必须是普通对象且字段都是 string
+    if (!provider || typeof provider !== 'object') {
+      return { ok: false, error: '入参无效' }
+    }
     const name = String(provider.name || '').trim()
     const baseUrl = String(provider.baseUrl || '').trim()
     const apiKey = String(provider.apiKey || '').trim()
+    const type = typeof provider.type === 'string' ? provider.type : 'custom'
 
     if (!name || !baseUrl || !apiKey) {
       return { ok: false, error: '请填写完整的厂商信息' }
@@ -278,12 +262,12 @@ function setupIPC() {
       return { ok: false, error: '这个 API 地址已经添加过了' }
     }
 
+    // 白名单字段：只取已知字段写盘，丢弃原型链注入的额外字段
     const entry = {
-      ...provider,
+      id: `p_${Date.now()}`,
+      type,
       name,
       baseUrl,
-      apiKey: undefined,
-      id: `p_${Date.now()}`,
       apiKeyEncrypted: encryptApiKey(apiKey),
       apiKeyMasked: maskApiKey(apiKey),
       models: [],
@@ -296,18 +280,29 @@ function setupIPC() {
   })
 
   ipcMain.handle('provider:remove', (_e, id: string) => {
+    if (typeof id !== 'string' || id.length === 0 || id.length > 100) {
+      return { ok: false, error: '入参无效' }
+    }
     const providers = (store.get('providers', []) as any[]).filter((p: any) => p.id !== id)
     store.set('providers', providers)
     return { ok: true }
   })
 
   ipcMain.handle('provider:update', (_e, data: { id: string; updates: Record<string, unknown> }) => {
+    // 入参守卫
+    if (!data || typeof data !== 'object' || typeof data.id !== 'string' || !data.updates || typeof data.updates !== 'object') {
+      return { ok: false, error: '入参无效' }
+    }
     const providers = (store.get('providers', []) as any[])
     const idx = providers.findIndex((p: any) => p.id === data.id)
     if (idx === -1) return { ok: false, error: '厂商不存在' }
 
-    if (typeof data.updates.name === 'string' && !data.updates.name.trim()) {
-      return { ok: false, error: '显示名称不能为空' }
+    // 白名单 updates：只取允许修改的字段，避免 __proto__ 等注入
+    const allowed: Record<string, unknown> = {}
+    if (typeof data.updates.name === 'string') {
+      const name = data.updates.name.trim()
+      if (!name) return { ok: false, error: '显示名称不能为空' }
+      allowed.name = name
     }
     if (typeof data.updates.baseUrl === 'string') {
       const baseUrl = data.updates.baseUrl.trim()
@@ -316,21 +311,25 @@ function setupIPC() {
       if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
       const duplicate = providers.some((p: any) => p.id !== data.id && String(p.baseUrl).replace(/\/+$/, '') === baseUrl.replace(/\/+$/, ''))
       if (duplicate) return { ok: false, error: '这个 API 地址已经添加过了' }
-      data.updates.baseUrl = baseUrl
+      allowed.baseUrl = baseUrl
     }
-    if (typeof data.updates.name === 'string') data.updates.name = data.updates.name.trim()
-    if (data.updates.apiKey) {
-      data.updates.apiKeyEncrypted = encryptApiKey(data.updates.apiKey as string)
-      data.updates.apiKeyMasked = maskApiKey(data.updates.apiKey as string)
-      delete data.updates.apiKey
+    if (typeof data.updates.type === 'string') {
+      allowed.type = data.updates.type
     }
-    providers[idx] = { ...providers[idx], ...data.updates, updatedAt: new Date().toISOString() }
+    if (typeof data.updates.apiKey === 'string' && data.updates.apiKey.length > 0) {
+      allowed.apiKeyEncrypted = encryptApiKey(data.updates.apiKey)
+      allowed.apiKeyMasked = maskApiKey(data.updates.apiKey)
+    }
+    providers[idx] = { ...providers[idx], ...allowed, updatedAt: new Date().toISOString() }
     store.set('providers', providers)
     return { ok: true, provider: sanitizeProvider(providers[idx]) }
   })
 
   // ---- 模型管理 ----
   ipcMain.handle('provider:list-models', (_e, providerId: string) => {
+    if (typeof providerId !== 'string' || providerId.length === 0) {
+      return { ok: false, error: '入参无效' }
+    }
     const providers = store.get('providers', []) as any[]
     const provider = providers.find((p: any) => p.id === providerId)
     if (!provider) return { ok: false, error: '厂商不存在' }
@@ -338,22 +337,35 @@ function setupIPC() {
   })
 
   ipcMain.handle('model:update', (_e, data: { providerId: string; modelId: string; updates: Record<string, unknown> }) => {
+    // 入参守卫
+    if (!data || typeof data !== 'object' || typeof data.providerId !== 'string' || typeof data.modelId !== 'string'
+        || !data.updates || typeof data.updates !== 'object') {
+      return { ok: false, error: '入参无效' }
+    }
     const providers = (store.get('providers', []) as any[])
     const pIdx = providers.findIndex((p: any) => p.id === data.providerId)
     if (pIdx === -1) return { ok: false, error: '厂商不存在' }
     const mIdx = (providers[pIdx].models || []).findIndex((m: any) => m.id === data.modelId)
     if (mIdx === -1) return { ok: false, error: '模型不存在' }
-    if (data.updates.enabled === false && providers[pIdx].models[mIdx].isDefault) {
+
+    // 白名单字段：只允许更新这些属性
+    const allowed: Record<string, unknown> = {}
+    if (typeof data.updates.enabled === 'boolean') allowed.enabled = data.updates.enabled
+    if (typeof data.updates.isDefault === 'boolean') allowed.isDefault = data.updates.isDefault
+    if (typeof data.updates.isReasoning === 'boolean') allowed.isReasoning = data.updates.isReasoning
+    if (typeof data.updates.displayName === 'string') allowed.displayName = data.updates.displayName
+
+    if (allowed.enabled === false && providers[pIdx].models[mIdx].isDefault) {
       return { ok: false, error: '默认模型不能直接禁用，请先选择其他默认模型' }
     }
     // 设默认时取消所有厂商的默认，保证全局只有一个默认模型。
-    if (data.updates.isDefault) {
+    if (allowed.isDefault) {
       providers.forEach((p: any) => {
         (p.models || []).forEach((m: any) => { m.isDefault = false })
       })
-      data.updates.enabled = true
+      allowed.enabled = true
     }
-    providers[pIdx].models[mIdx] = { ...providers[pIdx].models[mIdx], ...data.updates }
+    providers[pIdx].models[mIdx] = { ...providers[pIdx].models[mIdx], ...allowed }
     providers[pIdx].updatedAt = new Date().toISOString()
     store.set('providers', providers)
     return { ok: true }
@@ -361,7 +373,10 @@ function setupIPC() {
 
   // ---- 测试连接 & 拉取模型 ----
   ipcMain.handle('provider:test-config', async (_e, provider: { baseUrl: string; apiKey: string }) => {
-    const urlCheck = validateProviderUrl(String(provider.baseUrl || ''))
+    if (!provider || typeof provider !== 'object' || typeof provider.baseUrl !== 'string' || typeof provider.apiKey !== 'string') {
+      return { ok: false, error: '入参无效' }
+    }
+    const urlCheck = validateProviderUrl(provider.baseUrl)
     if (!urlCheck.ok) return { ok: false, error: urlCheck.error }
     try {
       const result = await requestProviderModels({ ...provider, id: 'preview' }, provider.apiKey)
@@ -372,6 +387,9 @@ function setupIPC() {
   })
 
   ipcMain.handle('provider:test', async (_e, providerId: string) => {
+    if (typeof providerId !== 'string' || providerId.length === 0) {
+      return { ok: false, error: '入参无效', latencyMs: 0 }
+    }
     const providers = store.get('providers', []) as any[]
     const p = providers.find((p2: any) => p2.id === providerId)
     if (!p) return { ok: false, error: '厂商不存在', latencyMs: 0 }
@@ -388,6 +406,9 @@ function setupIPC() {
   })
 
   ipcMain.handle('provider:fetch-models', async (_e, providerId: string) => {
+    if (typeof providerId !== 'string' || providerId.length === 0) {
+      return { ok: false, error: '入参无效' }
+    }
     const providers = store.get('providers', []) as any[]
     const p = providers.find((p2: any) => p2.id === providerId)
     if (!p) return { ok: false, error: '厂商不存在' }
@@ -437,10 +458,17 @@ function setupIPC() {
   })
 
   // ---- AI 请求 ----
-  let activeAbortController: AbortController | null = null
+  // 按 requestId 隔离的 AbortController Map。旧版用一个全局变量，弹窗和结果窗口
+  // 并发请求时会被互相覆盖，前一个 controller 变孤儿，fetch 继续向已隐藏的
+  // webContents 发送 chunk。每个 ai:chat 生成独立 requestId，按它路由 chunk，
+  // 这样多窗口并发不会串流。
+  const activeAbortControllers = new Map<string, AbortController>()
+  // 单次流式请求总超时（5 分钟）：防止上游不返回 [DONE] 时 controller 永远占位。
+  const STREAM_TIMEOUT_MS = 5 * 60 * 1000
 
   ipcMain.handle('ai:chat', async (event, params: {
-    providerId: string; modelId: string; messages: Array<{ role: string; content: string }>;
+    requestId?: string; providerId: string; modelId: string;
+    messages: Array<{ role: string; content: string }>;
     temperature?: number; maxTokens?: number;
   }) => {
     const providers = store.get('providers', []) as any[]
@@ -457,8 +485,12 @@ function setupIPC() {
     const key = decryptApiKey(p.apiKeyEncrypted)
     if (!key) return { ok: false, error: '无法解密 API Key' }
 
-    activeAbortController = new AbortController()
-    const { signal } = activeAbortController
+    // 为本次请求分配独立 id；renderer 必须用它来订阅 chunk 路由。
+    const requestId = params.requestId || `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const controller = new AbortController()
+    activeAbortControllers.set(requestId, controller)
+    // 组合信号：用户取消 OR 总超时
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(STREAM_TIMEOUT_MS)])
     const startedAt = Date.now()
 
     try {
@@ -514,7 +546,8 @@ function setupIPC() {
             const content = parsed.choices?.[0]?.delta?.content || ''
             if (content) {
               fullContent += content
-              event.sender.send('ai:stream-chunk', { content, fullContent })
+              // 带 requestId：renderer 端的监听器按它过滤，避免并发流串扰
+              event.sender.send('ai:stream-chunk', { requestId, content, fullContent })
             }
             // OpenAI 在最后一个 chunk（choices 为空）携带 usage
             if (parsed.usage) {
@@ -524,31 +557,46 @@ function setupIPC() {
                 totalTokens: parsed.usage.total_tokens,
               }
               // 单独推送一条 usage 事件，前端可以监听
-              event.sender.send('ai:stream-usage', tokenUsage)
+              event.sender.send('ai:stream-usage', { requestId, ...tokenUsage })
             }
           } catch { /* 跳过解析失败的行 */ }
         }
       }
       return {
         ok: true,
+        requestId,
         content: fullContent,
         latencyMs: Date.now() - startedAt,
         tokenUsage,
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') return { ok: false, error: '已取消' }
-      return { ok: false, error: err.message || '网络错误' }
+      if (err.name === 'AbortError' || err.name === 'TimeoutError') {
+        const message = err.name === 'TimeoutError' ? '请求超时，请稍后重试' : '已取消'
+        return { ok: false, error: message, requestId }
+      }
+      return { ok: false, error: err.message || '网络错误', requestId }
     } finally {
-      activeAbortController = null
+      activeAbortControllers.delete(requestId)
     }
   })
 
-  ipcMain.handle('ai:cancel', () => {
-    if (activeAbortController) {
-      activeAbortController.abort()
-      return { ok: true }
+  ipcMain.handle('ai:cancel', (_e, requestId?: string) => {
+    if (requestId) {
+      const ctrl = activeAbortControllers.get(requestId)
+      if (ctrl) {
+        ctrl.abort()
+        activeAbortControllers.delete(requestId)
+        return { ok: true }
+      }
+      return { ok: false, error: '该请求不存在或已完成' }
     }
-    return { ok: false, error: '没有正在进行的请求' }
+    // 兼容旧版调用：没传 requestId 就取消全部
+    if (activeAbortControllers.size === 0) {
+      return { ok: false, error: '没有正在进行的请求' }
+    }
+    for (const ctrl of activeAbortControllers.values()) ctrl.abort()
+    activeAbortControllers.clear()
+    return { ok: true }
   })
 
   // ---- 窗口控制 ----
@@ -598,24 +646,8 @@ function setupIPC() {
   ipcMain.handle('shell:open-external', (_e, url: string) => {
     // 严校验：必须能严格解析、且原串与重新序列化一致（防 NUL 截断/不可见字符绕过）；
     // 只允许 http/https；禁 userinfo（防 https://attacker:x@victim.com 钓鱼）
-    if (typeof url !== 'string' || url.length === 0 || url.length > 2048) {
-      return { ok: false, error: '链接无效' }
-    }
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      return { ok: false, error: '链接格式无效' }
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return { ok: false, error: '只允许 http(s) 链接' }
-    }
-    if (parsed.username || parsed.password) {
-      return { ok: false, error: '链接不允许包含用户名/密码' }
-    }
-    if (parsed.href !== url) {
-      return { ok: false, error: '链接含非法字符' }
-    }
+    const check = validateExternalUrl(url)
+    if (!check.ok) return { ok: false, error: check.error }
     return shell.openExternal(url).then(() => ({ ok: true })).catch((err: Error) => ({ ok: false, error: err.message }))
   })
 
@@ -691,6 +723,11 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  // 清理未触发的防抖定时器，避免退出后回调写到已销毁的 store
+  if (saveBoundsTimer) {
+    clearTimeout(saveBoundsTimer)
+    saveBoundsTimer = null
+  }
   if (app.isReady()) {
     unregisterShortcuts()
     stopTextWatch()

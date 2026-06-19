@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type Ref } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type Ref } from 'react'
 import { motion } from 'framer-motion'
 import type { ActionConfig, PopupSettings } from '@/types/models'
 import { getPopupEnterState, getPopupExitState, popupMotionEase } from './popupMotion'
@@ -29,9 +29,18 @@ export default function SelectionToolbar({
   const isIconOnly = popup.layout === 'icon-only'
   const duration = popup.animationDurationMs / 1000
   const [flashingId, setFlashingId] = useState<string | null>(null)
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 卸载时清掉未触发的 flash 定时器，避免在已卸载组件上 setState
+  useEffect(() => () => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+  }, [])
   const triggerFlash = (id: string) => {
     setFlashingId(id)
-    setTimeout(() => setFlashingId((current) => (current === id ? null : current)), 400)
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = setTimeout(() => {
+      flashTimerRef.current = null
+      setFlashingId((current) => (current === id ? null : current))
+    }, 400)
   }
 
   return (

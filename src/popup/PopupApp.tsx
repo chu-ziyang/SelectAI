@@ -5,35 +5,12 @@ import { useModelStore } from '@/stores/modelStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { usePopupSessionStore } from '@/stores/popupSessionStore'
 import { compilePrompt } from '@/services/promptEngine'
+import { estimateToolbarWidth, resultBounds } from '@/shared/toolbarGeometry'
 import type { ActionConfig } from '@/types/models'
 import { useKeyboardNav } from './useKeyboardNav'
 import { useI18n } from '@/i18n/useI18n'
 import SelectionToolbar from './SelectionToolbar'
 import ExpandedResult from './ExpandedResult'
-
-function estimateToolbarWidth(actions: Array<Pick<ActionConfig, 'name'>>, popupWidth: number, isVertical: boolean, isIconOnly: boolean) {
-  if (isVertical) return popupWidth
-  // 这个值只用于"窗口首次显示前"的兜底尺寸，挂载后 ResizeObserver 会按真实宽度二次校准。
-  // 按钮组成：padding(16) + icon(20) + gap(6) + text；中文 12px font-weight 560
-  // 字符宽度约 14-16px，这里取 16 防裁切；toolbar 外层 padding 3*2。
-  const PADDING_PER_BUTTON = 16
-  const ICON_WIDTH = 20
-  const GAP_ICON_TEXT = 6
-  const CHAR_WIDTH = 16
-  const contentWidth = actions.reduce((sum, action) => {
-    if (isIconOnly) return sum + 30
-    const buttonWidth = PADDING_PER_BUTTON + ICON_WIDTH + GAP_ICON_TEXT + action.name.length * CHAR_WIDTH
-    return sum + Math.max(60, Math.min(140, buttonWidth))
-  }, 6)
-  return Math.min(720, Math.max(180, popupWidth, contentWidth))
-}
-
-function resultBounds(popupWidth: number, popupMaxHeight: number) {
-  return {
-    width: Math.min(720, Math.max(360, popupWidth)),
-    height: Math.max(300, popupMaxHeight),
-  }
-}
 
 export default function PopupApp() {
   const { t } = useI18n()
