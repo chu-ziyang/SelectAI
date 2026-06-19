@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Github, RefreshCw, MessageCircle, History, ExternalLink, Sparkles, Heart } from 'lucide-react'
+import { Github, RefreshCw, MessageCircle, History, Heart } from 'lucide-react'
 import { useI18n } from '@/i18n/useI18n'
 
 const REPO_URL = 'https://github.com/chu-ziyang/SelectAI'
@@ -53,117 +53,54 @@ export default function AboutSettings() {
     await window.electronAPI?.shell.openExternal(url)
   }
 
-  // 列表项渲染辅助
-  const Row = ({
-    icon, title, subtitle, action, accent = 'default',
-  }: {
-    icon: React.ReactNode
-    title: string
-    subtitle?: React.ReactNode
-    action: React.ReactNode
-    accent?: 'default' | 'success' | 'warning'
-  }) => (
-    <div className="setting-row flex items-center gap-3 px-5 py-3.5">
-      <div className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${
-        accent === 'success' ? 'bg-[#34C759]/15 text-[#34C759]' :
-        accent === 'warning' ? 'bg-[#FF9500]/15 text-[#FF9500]' :
-        'bg-[#007AFF]/12 text-[#007AFF]'
-      }`}>
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-[var(--text-primary)]">{title}</p>
-        {subtitle && <div className="text-xs text-[var(--text-secondary)] mt-0.5">{subtitle}</div>}
-      </div>
-      <div className="shrink-0">{action}</div>
-    </div>
-  )
-
-  const ExternalButton = ({ url, label }: { url: string; label: string }) => (
-    <button
-      type="button"
-      onClick={() => openExternal(url)}
-      className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--fill-quaternary)] hover:bg-[var(--fill-tertiary)] text-xs text-[var(--text-secondary)] transition-colors"
-    >
-      {label}
-      <ExternalLink size={11} />
-    </button>
-  )
-
   return (
     <div>
-      {/* 品牌区 */}
-      <div className="settings-section p-8 text-center">
-        <div className="w-20 h-20 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-[#007AFF] to-[#5856D6] flex items-center justify-center shadow-ios-lg">
-          <Sparkles size={32} className="text-white" />
+      {/* 更新与社区 - 一行 4 列按钮 */}
+      <div className="settings-section mt-4 px-3 py-4">
+        <div className="grid grid-cols-4 gap-2">
+          {/* 检查更新 */}
+          <TileButton
+            icon={<RefreshCw size={20} className={update.kind === 'checking' ? 'animate-spin' : ''} />}
+            label={
+              update.kind === 'updateAvailable' ? t('about.updateAvailable') :
+              update.kind === 'upToDate' ? t('about.upToDate') :
+              update.kind === 'error' ? t('about.checkFailed') :
+              t('about.checkUpdate')
+            }
+            hint={<UpdateSubtitle state={update} compact />}
+            accent={
+              update.kind === 'updateAvailable' ? 'warning' :
+              update.kind === 'upToDate' ? 'success' :
+              update.kind === 'error' ? 'danger' :
+              'default'
+            }
+            onClick={update.kind === 'updateAvailable'
+              ? () => openExternal((update as { htmlUrl: string }).htmlUrl)
+              : handleCheckUpdate
+            }
+          />
+          {/* 版本历史 */}
+          <TileButton
+            icon={<History size={20} />}
+            label={t('about.changelog')}
+            hint={<span className="text-[10px] text-[var(--text-tertiary)]">v{currentVersion}</span>}
+            onClick={() => openExternal(RELEASES_URL)}
+          />
+          {/* 反馈问题 */}
+          <TileButton
+            icon={<MessageCircle size={20} />}
+            label={t('about.feedback')}
+            hint={<span className="text-[10px] text-[var(--text-tertiary)]">Issues</span>}
+            onClick={() => openExternal(ISSUES_NEW_URL)}
+          />
+          {/* 项目主页 */}
+          <TileButton
+            icon={<Github size={20} />}
+            label={t('about.githubRepo')}
+            hint={<span className="font-mono text-[10px] text-[var(--text-tertiary)]">SelectAI</span>}
+            onClick={() => openExternal(REPO_URL)}
+          />
         </div>
-        <h3 className="text-xl font-bold text-[var(--text-primary)]">划词助手</h3>
-        <p className="text-sm text-[var(--text-secondary)] mt-1.5">{t('about.tagline')}</p>
-        <p className="text-xs text-[var(--text-tertiary)] mt-2 font-mono">v{currentVersion}</p>
-      </div>
-
-      {/* 更新与社区 */}
-      <div className="settings-section mt-4">
-        <p className="px-5 pt-4 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
-          {t('about.checkUpdate')}
-        </p>
-
-        <Row
-          icon={<RefreshCw size={16} />}
-          title={
-            update.kind === 'updateAvailable'
-              ? t('about.updateAvailable')
-              : update.kind === 'upToDate'
-                ? t('about.upToDate')
-                : update.kind === 'error'
-                  ? t('about.checkFailed')
-                  : t('about.checkUpdate')
-          }
-          subtitle={
-            <UpdateSubtitle state={update} />
-          }
-          accent={
-            update.kind === 'updateAvailable' ? 'warning' :
-            update.kind === 'upToDate' ? 'success' :
-            'default'
-          }
-          action={
-            update.kind === 'updateAvailable' ? (
-              <ExternalButton url={update.htmlUrl} label={t('about.downloadNow')} />
-            ) : (
-              <button
-                type="button"
-                onClick={handleCheckUpdate}
-                disabled={update.kind === 'checking'}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#007AFF] hover:bg-[#0066D6] disabled:bg-[#007AFF]/50 text-white text-xs font-medium transition-colors"
-              >
-                <RefreshCw size={12} className={update.kind === 'checking' ? 'animate-spin' : ''} />
-                {update.kind === 'checking' ? t('about.checking') : t('about.checkUpdate')}
-              </button>
-            )
-          }
-        />
-
-        <Row
-          icon={<History size={16} />}
-          title={t('about.changelog')}
-          subtitle={<span className="text-[var(--text-tertiary)]">v{currentVersion} · {RELEASES_URL.replace('https://', '')}</span>}
-          action={<ExternalButton url={RELEASES_URL} label={t('about.changelog')} />}
-        />
-
-        <Row
-          icon={<MessageCircle size={16} />}
-          title={t('about.feedback')}
-          subtitle={<span className="text-[var(--text-tertiary)]">{t('about.feedbackHint') || 'Bug · 建议 · 功能请求'}</span>}
-          action={<ExternalButton url={ISSUES_NEW_URL} label={t('about.feedback')} />}
-        />
-
-        <Row
-          icon={<Github size={16} />}
-          title={t('about.githubRepo')}
-          subtitle={<span className="font-mono text-[var(--text-tertiary)]">chu-ziyang/SelectAI</span>}
-          action={<ExternalButton url={REPO_URL} label="GitHub" />}
-        />
       </div>
 
       {/* 开发者 */}
@@ -199,29 +136,65 @@ export default function AboutSettings() {
   )
 }
 
-function UpdateSubtitle({ state }: { state: UpdateState }) {
+// 紧凑的格子按钮（4 列网格里的一格）
+function TileButton({
+  icon, label, hint, onClick, accent = 'default',
+}: {
+  icon: React.ReactNode
+  label: string
+  hint?: React.ReactNode
+  onClick: () => void
+  accent?: 'default' | 'success' | 'warning' | 'danger'
+}) {
+  const accentClass =
+    accent === 'success' ? 'text-[#34C759] bg-[#34C759]/8 hover:bg-[#34C759]/15' :
+    accent === 'warning' ? 'text-[#FF9500] bg-[#FF9500]/8 hover:bg-[#FF9500]/15' :
+    accent === 'danger'  ? 'text-[#FF3B30] bg-[#FF3B30]/8 hover:bg-[#FF3B30]/15' :
+                           'text-[#007AFF] bg-[#007AFF]/8 hover:bg-[#007AFF]/15'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex flex-col items-center justify-center gap-1.5 px-2 py-3.5 rounded-xl transition-colors ${accentClass}`}
+    >
+      {icon}
+      <span className="text-[11px] font-medium text-[var(--text-primary)] text-center leading-tight">
+        {label}
+      </span>
+      {hint && <span className="leading-none">{hint}</span>}
+    </button>
+  )
+}
+
+function UpdateSubtitle({ state, compact = false }: { state: UpdateState; compact?: boolean }) {
   const { t } = useI18n()
+  // compact 模式：格子按钮内显示，单行简短
   if (state.kind === 'idle') {
-    return <span className="text-[var(--text-tertiary)]">{t('about.clickToCheck') || '点击右侧按钮检查 GitHub 最新版本'}</span>
+    return compact ? <span className="text-[10px] text-[var(--text-tertiary)]">点击检查</span> :
+      <span className="text-[var(--text-tertiary)]">{t('about.clickToCheck') || '点击右侧按钮检查 GitHub 最新版本'}</span>
   }
   if (state.kind === 'checking') {
-    return <span className="text-[var(--text-tertiary)]">{t('about.checkingGithub') || '正在访问 GitHub Releases…'}</span>
+    return compact ? <span className="text-[10px] text-[var(--text-tertiary)]">检查中…</span> :
+      <span className="text-[var(--text-tertiary)]">{t('about.checkingGithub') || '正在访问 GitHub Releases…'}</span>
   }
   if (state.kind === 'upToDate') {
-    return <span className="text-[#34C759]">v{state.currentVersion} = v{state.latestVersion} ✓</span>
+    return compact ? <span className="text-[10px] text-[#34C759]">✓ 最新</span> :
+      <span className="text-[#34C759]">v{state.currentVersion} = v{state.latestVersion} ✓</span>
   }
   if (state.kind === 'updateAvailable') {
-    return (
-      <span className="text-[#FF9500]">
-        v{state.currentVersion} → <strong>v{state.latestVersion}</strong>
-        {state.publishedAt && (
-          <span className="text-[var(--text-tertiary)] ml-1.5">· {state.publishedAt.slice(0, 10)}</span>
-        )}
-      </span>
-    )
+    return compact ? <span className="text-[10px] text-[#FF9500]">→ v{state.latestVersion}</span> :
+      (
+        <span className="text-[#FF9500]">
+          v{state.currentVersion} → <strong>v{state.latestVersion}</strong>
+          {state.publishedAt && (
+            <span className="text-[var(--text-tertiary)] ml-1.5">· {state.publishedAt.slice(0, 10)}</span>
+          )}
+        </span>
+      )
   }
   if (state.kind === 'error') {
-    return <span className="text-[#FF3B30]">{state.message}</span>
+    return compact ? <span className="text-[10px] text-[#FF3B30]">失败</span> :
+      <span className="text-[#FF3B30]">{state.message}</span>
   }
   return null
 }
