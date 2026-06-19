@@ -44,17 +44,23 @@ jobs:
             -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${TAG}")
-          REL_ID=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.id||''))}catch{process.stdout.write('')}}")
-          REL_DRAFT=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.draft))}catch{process.stdout.write('')}}")
+          echo "GET release response (first 200 chars):"
+          printf '%s' "$REL_JSON" | head -c 200
+          echo ""
+          REL_ID=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.id||''))}catch{process.stdout.write('')}})")
+          REL_DRAFT=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.draft))}catch{process.stdout.write('')}})")
+          echo "REL_ID='${REL_ID}' REL_DRAFT='${REL_DRAFT}'"
           if [ -n "$REL_ID" ] && [ "$REL_DRAFT" = "true" ]; then
-            echo "Deleting existing draft release id=$REL_ID for ${TAG}"
-            curl -sS -X DELETE \
+            echo "Deleting existing draft release id=${REL_ID} for ${TAG}"
+            HTTP_CODE=$(curl -sS -o /tmp/del.json -w "%{http_code}" -X DELETE \
               -H "Authorization: token ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}"
-            echo "deleted."
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}")
+            echo "DELETE http_code=${HTTP_CODE}"
+            cat /tmp/del.json | head -c 200
+            echo ""
           else
-            echo "No draft release for ${TAG} (id='${REL_ID}', draft='${REL_DRAFT}'); skipping cleanup."
+            echo "No draft release to delete; skipping."
           fi
 
       - name: 构建并发布 (创建正式 Release)
@@ -63,15 +69,37 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          # 从 CHANGELOG.md 抽取 ## [VERSION] 段作为 release notes
           NOTES=$(awk "/^## \\[$VERSION\\]/{flag=1; next} /^## \\[/{flag=0} flag" CHANGELOG.md)
           if [ -z "$NOTES" ]; then
             NOTES="Release ${TAG}。完整变更记录见 CHANGELOG.md。"
           fi
-          # 写到 GH_RELEASE_BODY 环境变量，electron-builder 会读取
           export GH_RELEASE_BODY="$NOTES"
           echo "release notes: $(printf '%s' "$NOTES" | wc -c) bytes"
           npm run package -- --publish always
+          # electron-builder --publish always 用 releaseType=release 直接发布正式 release；
+          # 如果因为 draft 已存在（清理失败等原因）仍然是 draft，这里再强制转一次。
+          sleep 3
+          REL_JSON=$(curl -sS \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${TAG}")
+          REL_DRAFT=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.draft))}catch{process.stdout.write('')}})")
+          if [ "$REL_DRAFT" = "true" ]; then
+            echo "::warning::Release is still draft after electron-builder; forcing published."
+            REL_ID=$(printf '%s' "$REL_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d);process.stdout.write(String(r.id||''))}catch{process.stdout.write('')}})")
+            BODY=$(jq -n --arg n "$NOTES" '{draft: false, body: $n}')
+            HTTP_CODE=$(curl -sS -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/${REL_ID}" \
+              -d "$BODY")
+            echo "PATCH http_code=${HTTP_CODE}"
+            cat /tmp/patch.json | head -c 300
+            echo ""
+          else
+            echo "Release is already published (draft=${REL_DRAFT})."
+          fi
 
       - name: 上传构建产物 (作为 workflow artifact 备份)
         uses: actions/upload-artifact@v4
