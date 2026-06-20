@@ -126,15 +126,35 @@ const electronAPI = {
   // 应用信息
   app: {
     getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version'),
+    getInfo: (): Promise<{
+      version: string
+      appName: string
+      productName: string
+      electronVersion: string
+      chromeVersion: string
+      nodeVersion: string
+      userDataPath: string
+      platform: string
+    }> => ipcRenderer.invoke('app:get-info'),
     checkUpdate: (): Promise<{
       ok: boolean
       currentVersion?: string
       latestVersion?: string
       htmlUrl?: string
       publishedAt?: string
+      body?: string
       hasUpdate?: boolean
       error?: string
     }> => ipcRenderer.invoke('app:check-update'),
+    /**
+     * 订阅启动时的自动检查更新事件。返回取消订阅函数。
+     * 主进程只在 autoCheckUpdate 开启 + 节流到期 + 实际有更新时才会推这个事件。
+     */
+    onUpdateAvailable: (callback: (data: { currentVersion: string; latestVersion: string; htmlUrl: string; publishedAt: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, data: { currentVersion: string; latestVersion: string; htmlUrl: string; publishedAt: string }) => callback(data)
+      ipcRenderer.on('app:update-available', listener)
+      return () => ipcRenderer.removeListener('app:update-available', listener)
+    },
   },
   // 平台
   platform: process.platform,

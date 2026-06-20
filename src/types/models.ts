@@ -140,6 +140,10 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'system'
   fontScale: 'small' | 'medium' | 'large' | 'xl' | 'xxl' | 'xxxl'
   fontFamily: string
+  /** 启动时自动检查更新（关于页可切换） */
+  autoCheckUpdate: boolean
+  /** 上次自动检查更新的 Unix 毫秒时间戳（仅作节流参考，不展示给用户） */
+  lastUpdateCheckAt: number
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -157,6 +161,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: 'system',
   fontScale: 'medium',
   fontFamily: 'system',
+  autoCheckUpdate: false,
+  lastUpdateCheckAt: 0,
 }
 
 // ==================== 弹窗设置 ====================

@@ -656,7 +656,7 @@ function setupIPC() {
   // 返回 package.json 里的当前版本号（来自 electron.app.getVersion()，无需 IPC 参数）
   ipcMain.handle('app:get-version', () => app.getVersion())
 
-  // 调 GitHub Releases API 检查最新版本，返回 { ok, currentVersion, latestVersion, htmlUrl, publishedAt }
+  // 调 GitHub Releases API 检查最新版本，返回 { ok, currentVersion, latestVersion, htmlUrl, publishedAt, body }
   // 公开 endpoint，无需 token；带 User-Agent；不解析 prerelease
   ipcMain.handle('app:check-update', async () => {
     const currentVersion = app.getVersion()
@@ -675,12 +675,15 @@ function setupIPC() {
       const latestVersion = String(data.tag_name || '').replace(/^v/, '')
       const htmlUrl = String(data.html_url || '')
       const publishedAt = String(data.published_at || '')
+      // body 是 Markdown 形式的 release notes；前 800 字符足够在关于页摘要展示
+      const body = String(data.body || '').slice(0, 800)
       return {
         ok: true,
         currentVersion,
         latestVersion,
         htmlUrl,
         publishedAt,
+        body,
         // 简单的版本比较：latest > current 才有更新
         hasUpdate: compareSemver(latestVersion, currentVersion) > 0,
       }
@@ -688,6 +691,18 @@ function setupIPC() {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
+
+  // 返回版本、运行时、数据路径等只读信息（renderer 用于关于页展示）
+  ipcMain.handle('app:get-info', () => ({
+    version: app.getVersion(),
+    appName: app.getName(),
+    productName: (app as any).getName?.() || app.getName(),
+    electronVersion: process.versions.electron || '',
+    chromeVersion: process.versions.chrome || '',
+    nodeVersion: process.versions.node || '',
+    userDataPath: app.getPath('userData'),
+    platform: process.platform,
+  }))
 
   ipcMain.handle('popup:resize', (_e, width: number, height: number) => {
     resizePopupWindow(width, height)
@@ -737,6 +752,60 @@ function ensureSingleDefault() {
   store.set('providers', providers)
 }
 
+/** 节流常量：自动检查更新至少 24 小时跑一次 */
+const AUTO_CHECK_THROTTLE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 启动时按需自动检查更新：
+ * 1. 读 settings.autoCheckUpdate，关着就直接返回
+ * 2. 距上次检查不足 24h 也跳过
+ * 3. 调 GitHub Releases API，发现新版本时：
+ *    - 弹系统 Notification（带"打开下载页" action）
+ *    - 向所有渲染窗口发 'app:update-available' 事件（关于页打开时直接展示）
+ * 4. 无论结果如何都更新 lastUpdateCheckAt，避免失败时反复重试
+ */
+async function runAutoCheckUpdate(store: ReturnType<typeof createStore>) {
+  const settings = (store.get('settings', {}) as any) || {}
+  if (!settings.autoCheckUpdate) return
+  const lastAt = Number(settings.lastUpdateCheckAt) || 0
+  if (Date.now() - lastAt < AUTO_CHECK_THROTTLE_MS) return
+
+  // 写回 lastUpdateCheckAt（先把节流占住，避免在 fetch 期间被重复触发）
+  const next = { ...settings, lastUpdateCheckAt: Date.now() }
+  store.set('settings', next)
+
+  try {
+    const res = await fetch('https://api.github.com/repos/chu-ziyang/SelectAI/releases/latest', {
+      headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'SelectAI-AutoCheck' },
+    })
+    if (!res.ok) return
+    const data: any = await res.json()
+    const latestVersion = String(data.tag_name || '').replace(/^v/, '')
+    const htmlUrl = String(data.html_url || '')
+    const publishedAt = String(data.published_at || '')
+    const currentVersion = app.getVersion()
+    if (compareSemver(latestVersion, currentVersion) <= 0) return
+
+    const payload = { currentVersion, latestVersion, htmlUrl, publishedAt }
+    // 推送到所有渲染窗口（关于页打开时可直接消费）
+    BrowserWindow.getAllWindows().forEach((w) => {
+      if (!w.isDestroyed()) w.webContents.send('app:update-available', payload)
+    })
+    // 系统通知（用户感知最直接）
+    try {
+      const { Notification } = require('electron')
+      if (Notification.isSupported()) {
+        const n = new Notification({
+          title: '划词助手有可用更新',
+          body: `v${currentVersion} → v${latestVersion}，点击查看更新内容`,
+        })
+        n.on('click', () => { shell.openExternal(htmlUrl).catch(() => {}) })
+        n.show()
+      }
+    } catch { /* 系统不支持通知时静默 */ }
+  } catch { /* 自动检查失败静默，用户随时可手动点"检查更新" */ }
+}
+
 app.whenReady().then(() => {
   // 启动时自愈：保证全局最多只有一个模型 isDefault=true。
   // 历史 bug：旧版 fetch-models 在新厂商拉模型时可能无视其他厂商已有默认，
@@ -752,6 +821,10 @@ app.whenReady().then(() => {
   if (!(store.get('_paused', false) as boolean)) {
     startTextWatch()
   }
+
+  // 启动时按需自动检查更新（关于页可开关；默认关闭，避免后台打 GitHub）
+  // 节流 24h，避免每次冷启动都请求一次。
+  runAutoCheckUpdate(store)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()

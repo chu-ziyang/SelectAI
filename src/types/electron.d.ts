@@ -66,15 +66,27 @@ export interface ElectronAPI {
   }
   app: {
     getVersion: () => Promise<string>
+    getInfo: () => Promise<{
+      version: string
+      appName: string
+      productName: string
+      electronVersion: string
+      chromeVersion: string
+      nodeVersion: string
+      userDataPath: string
+      platform: string
+    }>
     checkUpdate: () => Promise<{
       ok: boolean
       currentVersion?: string
       latestVersion?: string
       htmlUrl?: string
       publishedAt?: string
+      body?: string
       hasUpdate?: boolean
       error?: string
     }>
+    onUpdateAvailable: (callback: (data: { currentVersion: string; latestVersion: string; htmlUrl: string; publishedAt: string }) => void) => () => void
   }
   platform: string
 }
